@@ -1,0 +1,22 @@
+Member Number,Net Weight (kg),Date,Number of Bags (Optional)
+M001,45.5,2024-01-15,2
+M002,38.2,2024-01-15,1
+M001,52.0,2024-01-16,2
+M003,29.8,2024-01-17,1
+M004,41.3,15/01/2024,2
+M005,33.7,01/18/2024,1
+M002,47.9,2024-01-19,2
+
+# COFFEE COLLECTION IMPORT INSTRUCTIONS:
+# 1. REQUIRED FIELDS: Member Number, Net Weight (kg), Date
+# 2. DATE FORMATS: yyyy-MM-dd, dd/MM/yyyy, or MM/dd/yyyy  
+# 3. NET WEIGHT: Decimal number in kg (e.g., 45.5)
+# 4. NUMBER OF BAGS: Optional integer (defaults to 1)
+# 5. One member can have multiple collections on different dates
+# 6. Gross weight and tare weight will be calculated automatically
+# 7. Duplicate collections (same member, date, and weight) will be skipped
+#
+# EXAMPLES:
+# M001,45.5,2024-01-15,2 - Member M001, 45.5kg, Jan 15 2024, 2 bags
+# M002,38.2,15/01/2024,1 - Member M002, 38.2kg, Jan 15 2024, 1 bag
+# Remove sample rows before importing 

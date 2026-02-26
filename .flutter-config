@@ -1,0 +1,11 @@
+enable-web=true
+enable-android=true
+enable-ios=false
+enable-macos=false
+enable-windows=false
+enable-linux=false
+
+# Performance optimization flags
+enable-impeller=true
+enable-fast-start=true
+android-cpu=arm64-v8a 

@@ -1,0 +1,800 @@
+import 'dart:async';
+
+import 'package:flutter/material.dart';
+import 'package:get/get.dart';
+
+import '../constants/app_constants.dart';
+import '../models/models.dart';
+import '../services/services.dart';
+
+class InventoryController extends GetxController {
+  InventoryService get _inventoryService => Get.find<InventoryService>();
+  AuthService get _authService => Get.find<AuthService>();
+
+  final RxBool isLoading = false.obs;
+  final RxString error = ''.obs;
+
+  // Product form controllers
+  final productNameController = TextEditingController();
+  final productDescriptionController = TextEditingController();
+  final packSizeController = TextEditingController();
+  final salesPriceController = TextEditingController();
+  final costPriceController = TextEditingController();
+  final minimumStockController = TextEditingController();
+  final maximumStockController = TextEditingController();
+  final barcodeController = TextEditingController();
+  final skuController = TextEditingController();
+  final initialStockController = TextEditingController();
+
+  final Rx<ProductCategory?> selectedCategory = Rx<ProductCategory?>(null);
+  final Rx<UnitOfMeasure?> selectedUnit = Rx<UnitOfMeasure?>(null);
+  final RxBool allowPartialSales = true.obs;
+  final RxBool canBeSplit = false.obs;
+
+  // Sale form controllers
+  final RxList<SaleItem> saleItems = <SaleItem>[].obs;
+  final Rx<Member?> selectedMember = Rx<Member?>(null);
+  final RxString saleType = 'CASH'.obs;
+  final paidAmountController = TextEditingController();
+  final saleNotesController = TextEditingController();
+  final RxDouble totalAmount = 0.0.obs;
+
+  // Multi pack sizes
+  final RxList<double> packSizes = <double>[].obs;
+
+  // Getters
+  List<UnitOfMeasure> get units => _inventoryService.units;
+  List<ProductCategory> get categories => _inventoryService.categories;
+  List<Product> get products => _inventoryService.products;
+  List<Stock> get stocks => _inventoryService.stocks;
+  List<Sale> get sales => _inventoryService.sales;
+  List<Repayment> get repayments => _inventoryService.repayments;
+
+  List<Sale> get creditSales => _inventoryService.creditSales;
+
+  @override
+  void onInit() {
+    super.onInit();
+    _setupSaleCalculation();
+  }
+
+  @override
+  void onClose() {
+    _disposeControllers();
+    super.onClose();
+  }
+
+  void _disposeControllers() {
+    productNameController.dispose();
+    productDescriptionController.dispose();
+    packSizeController.dispose();
+    salesPriceController.dispose();
+    costPriceController.dispose();
+    minimumStockController.dispose();
+    maximumStockController.dispose();
+    barcodeController.dispose();
+    skuController.dispose();
+    initialStockController.dispose();
+    paidAmountController.dispose();
+    saleNotesController.dispose();
+  }
+
+  void _setupSaleCalculation() {
+    // Auto-calculate total when sale items change
+    saleItems.listen((_) => _calculateSaleTotal());
+  }
+
+  void _calculateSaleTotal() {
+    totalAmount.value = saleItems.fold(
+      0.0,
+      (sum, item) => sum + item.totalPrice,
+    );
+  }
+
+  Future<void> refreshInventoryData() async {
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      // Load only essential data for sales screen performance
+      await _loadEssentialSalesData();
+    } catch (e) {
+      error.value = e.toString();
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  // Load only the data needed for sales operations
+  Future<void> _loadEssentialSalesData() async {
+    await Future.wait([
+      _inventoryService.loadUnits(),
+      _inventoryService.loadCategories(),
+      _inventoryService.loadProducts(),
+      _inventoryService.loadStocks(),
+    ]);
+
+    // Load sales data in background for reports (non-blocking)
+    _loadSalesDataInBackground();
+  }
+
+  // Load sales data in background without blocking the UI
+  void _loadSalesDataInBackground() {
+    Future.delayed(const Duration(milliseconds: 100), () async {
+      try {
+        await Future.wait([
+          _inventoryService.loadSales(),
+          _inventoryService.loadRepayments(),
+          _inventoryService.loadStockAdjustmentHistory(),
+        ]);
+        print('✓ Sales data loaded in background');
+      } catch (e) {
+        print('❌ Error loading sales data in background: $e');
+      }
+    });
+  }
+
+  // Method to force load all data when specifically needed (e.g., for reports)
+  Future<void> loadAllInventoryData() async {
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      await _inventoryService.loadAllData();
+    } catch (e) {
+      error.value = e.toString();
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  // Product Management
+  Future<bool> addProduct() async {
+    if (!_validateProductForm()) return false;
+
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      final product = Product(
+        id: '', // Will be auto-generated by service
+        name: productNameController.text.trim(),
+        description:
+            productDescriptionController.text.trim().isEmpty
+                ? null
+                : productDescriptionController.text.trim(),
+        categoryId: selectedCategory.value!.id,
+        categoryName: selectedCategory.value!.name,
+        unitOfMeasureId: selectedUnit.value!.id,
+        unitOfMeasureName: selectedUnit.value!.name,
+        packSizes:
+            packSizes.isNotEmpty
+                ? packSizes.toList()
+                : [double.tryParse(packSizeController.text.trim()) ?? 1.0],
+        packSize:
+            packSizes.isNotEmpty
+                ? packSizes.reduce((a, b) => a > b ? a : b)
+                : double.tryParse(packSizeController.text.trim()) ?? 1.0,
+        salesPrice: double.parse(salesPriceController.text),
+        costPrice:
+            costPriceController.text.trim().isEmpty
+                ? null
+                : double.parse(costPriceController.text),
+        minimumStock:
+            minimumStockController.text.trim().isEmpty
+                ? null
+                : double.parse(minimumStockController.text),
+        barcode:
+            barcodeController.text.trim().isEmpty
+                ? null
+                : barcodeController.text.trim(),
+        sku:
+            skuController.text.trim().isEmpty
+                ? null
+                : skuController.text.trim(),
+        isActive: true,
+        allowPartialSales: allowPartialSales.value,
+        canBeSplit: canBeSplit.value,
+        createdAt: DateTime.now(),
+      );
+
+      // Get initial stock quantity
+      final initialStock =
+          double.tryParse(initialStockController.text.trim()) ?? 0.0;
+
+      final result = await _inventoryService.addProduct(
+        product,
+        initialStock: initialStock,
+      );
+
+      if (result['success']) {
+        _clearProductForm();
+        Get.snackbar(
+          'Success',
+          AppConstants.addSuccessMessage,
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      } else {
+        throw Exception(result['error']);
+      }
+
+      return result['success'];
+    } catch (e) {
+      error.value = e.toString();
+      Get.snackbar(
+        'Error',
+        e.toString(),
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  bool _validateProductForm() {
+    if (productNameController.text.trim().isEmpty) {
+      error.value = 'Product name is required';
+      return false;
+    }
+
+    if (selectedCategory.value == null) {
+      error.value = 'Please select a category';
+      return false;
+    }
+
+    if (selectedUnit.value == null) {
+      error.value = 'Please select a unit of measure';
+      return false;
+    }
+
+    // Ensure at least one pack size added or pack size controller has valid value
+    if (packSizes.isEmpty) {
+      // If no pack sizes added, check if pack size controller has a valid value
+      final packSizeText = packSizeController.text.trim();
+      if (packSizeText.isEmpty) {
+        error.value = 'Please add at least one pack size';
+        return false;
+      }
+
+      final packSizeValue = double.tryParse(packSizeText);
+      if (packSizeValue == null || packSizeValue <= 0) {
+        error.value = 'Please enter a valid pack size';
+        return false;
+      }
+    } else {
+      // Validate all pack sizes positive
+      if (packSizes.any((p) => p <= 0)) {
+        error.value = 'Pack sizes must be greater than zero';
+        return false;
+      }
+    }
+
+    if (salesPriceController.text.trim().isEmpty) {
+      error.value = 'Sales price is required';
+      return false;
+    }
+
+    final salesPrice = double.tryParse(salesPriceController.text);
+    if (salesPrice == null || salesPrice <= 0) {
+      error.value = 'Please enter a valid sales price';
+      return false;
+    }
+
+    // Validate initial stock (required)
+    final initialStockText = initialStockController.text.trim();
+    if (initialStockText.isEmpty) {
+      error.value = 'Initial stock quantity is required';
+      return false;
+    }
+
+    final initialStock = double.tryParse(initialStockText);
+    if (initialStock == null || initialStock < 0) {
+      error.value = 'Initial stock must be a non-negative number';
+      return false;
+    }
+
+    return true;
+  }
+
+  void _clearProductForm() {
+    productNameController.clear();
+    productDescriptionController.clear();
+    packSizeController.clear();
+    salesPriceController.clear();
+    costPriceController.clear();
+    minimumStockController.clear();
+    barcodeController.clear();
+    skuController.clear();
+    initialStockController.clear();
+    selectedCategory.value = null;
+    selectedUnit.value = null;
+    packSizes.clear();
+    allowPartialSales.value = false;
+    canBeSplit.value = false;
+    error.value = '';
+  }
+
+  // Stock Management
+  Future<bool> adjustStock({
+    required String productId,
+    required double quantity,
+    required String movementType,
+    String? notes,
+  }) async {
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      final user = _authService.currentUser.value;
+      final result = await _inventoryService.adjustStock(
+        productId: productId,
+        quantity: quantity,
+        movementType: movementType,
+        notes: notes,
+        userId: user?.id,
+        userName: user?.fullName,
+      );
+
+      if (result['success']) {
+        // Refresh inventory data to update UI
+        await refreshInventoryData();
+        Get.snackbar(
+          'Success',
+          'Stock adjusted successfully',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      } else {
+        throw Exception(result['error']);
+      }
+
+      return result['success'];
+    } catch (e) {
+      error.value = e.toString();
+      Get.snackbar(
+        'Error',
+        e.toString(),
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  /// Corrects stock to a specific target quantity
+  Future<bool> correctStock({
+    required String productId,
+    required double targetQuantity,
+    required String reason,
+    String? notes,
+  }) async {
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      final user = _authService.currentUser.value;
+      final result = await _inventoryService.correctStock(
+        productId: productId,
+        targetQuantity: targetQuantity,
+        reason: reason,
+        notes: notes,
+        userId: user?.id,
+        userName: user?.fullName,
+      );
+
+      if (result['success']) {
+        // Refresh inventory data to update UI
+        await refreshInventoryData();
+        Get.snackbar(
+          'Success',
+          'Stock corrected successfully',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      } else {
+        throw Exception(result['error']);
+      }
+
+      return result['success'];
+    } catch (e) {
+      error.value = e.toString();
+      Get.snackbar(
+        'Error',
+        e.toString(),
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  // Sales Management
+  void addSaleItem(Product product, double quantity, double packSizeSold) {
+    final existingIndex = saleItems.indexWhere(
+      (item) =>
+          item.productId == product.id && item.packSizeSold == packSizeSold,
+    );
+
+    if (existingIndex >= 0) {
+      // Update existing item
+      final existingItem = saleItems[existingIndex];
+      final newQuantity = existingItem.quantity + quantity;
+      final unitPrice = product.pricePerUnit * packSizeSold;
+      final newTotalPrice = unitPrice * newQuantity;
+
+      saleItems[existingIndex] = existingItem.copyWith(
+        quantity: newQuantity,
+        totalPrice: newTotalPrice,
+      );
+    } else {
+      // Add new item
+      final unitPrice = product.pricePerUnit * packSizeSold;
+      final saleItem = SaleItem(
+        id: '', // Will be generated when sale is created
+        saleId: '', // Will be set when sale is created
+        productId: product.id,
+        productName: product.name,
+        quantity: quantity,
+        unitPrice: unitPrice,
+        totalPrice: unitPrice * quantity,
+        packSizeSold: packSizeSold,
+      );
+
+      saleItems.add(saleItem);
+    }
+  }
+
+  void removeSaleItem(int index) {
+    if (index >= 0 && index < saleItems.length) {
+      saleItems.removeAt(index);
+    }
+  }
+
+  void updateSaleItemQuantity(int index, double quantity) {
+    if (index >= 0 && index < saleItems.length) {
+      final item = saleItems[index];
+      final product = products.firstWhereOrNull((p) => p.id == item.productId);
+
+      if (product != null) {
+        final newTotal = item.unitPrice * quantity;
+        saleItems[index] = item.copyWith(
+          quantity: quantity,
+          totalPrice: newTotal,
+        );
+      }
+    }
+  }
+
+  Future<bool> createSale() async {
+    if (!_validateSaleForm()) return false;
+
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      final user = _authService.currentUser.value;
+      final paidAmount = double.tryParse(paidAmountController.text) ?? 0.0;
+
+      final result = await _inventoryService.createSale(
+        items: saleItems,
+        memberId: selectedMember.value?.id,
+        memberName: selectedMember.value?.fullName,
+        memberNumber: selectedMember.value?.memberNumber,
+        saleType: saleType.value,
+        paidAmount: paidAmount,
+        notes:
+            saleNotesController.text.trim().isEmpty
+                ? null
+                : saleNotesController.text.trim(),
+        userId: user!.id,
+        userName: user.fullName,
+      );
+
+      if (result['success']) {
+        final saleId = result['saleId'] as String;
+
+        // Get the created sale for SMS and receipt
+        await _inventoryService.loadSales(); // Refresh sales data
+        final createdSale = _inventoryService.sales.firstWhereOrNull(
+          (s) => s.id == saleId,
+        );
+
+        if (createdSale != null) {
+          // Send SMS notification if member has phone number and SMS is enabled
+          if (selectedMember.value?.phoneNumber != null &&
+              selectedMember.value!.phoneNumber!.isNotEmpty) {
+            try {
+              final smsService = Get.find<SmsService>();
+              await smsService.sendInventorySaleSMS(createdSale);
+            } catch (e) {
+              print('SMS sending failed (non-critical): $e');
+            }
+          }
+
+          // Note: Receipt printing is handled by the calling screen to avoid duplicates
+        }
+
+        _clearSaleForm();
+        Get.snackbar(
+          'Success',
+          'Sale created successfully',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+        // Small delay to allow snackbar to show before navigation
+        await Future.delayed(const Duration(milliseconds: 500));
+        Get.back();
+      } else {
+        throw Exception(result['error']);
+      }
+
+      return result['success'];
+    } catch (e) {
+      error.value = e.toString();
+      Get.snackbar(
+        'Error',
+        e.toString(),
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  bool _validateSaleForm() {
+    if (saleItems.isEmpty) {
+      error.value = 'Please add at least one item to the sale';
+      return false;
+    }
+
+    // Both cash and credit sales require a member
+    if (selectedMember.value == null) {
+      error.value = 'Please select a member for the sale';
+      return false;
+    }
+
+    final paidAmount = double.tryParse(paidAmountController.text) ?? 0.0;
+    if (saleType.value == 'CASH' && paidAmount < totalAmount.value) {
+      error.value = 'Paid amount must equal total amount for cash sales';
+      return false;
+    }
+
+    return true;
+  }
+
+  void _clearSaleForm() {
+    saleItems.clear();
+    selectedMember.value = null;
+    saleType.value = 'CASH';
+    paidAmountController.clear();
+    saleNotesController.clear();
+    totalAmount.value = 0.0;
+    error.value = '';
+  }
+
+  // Helper methods
+  Stock? getProductStock(String productId) {
+    return _inventoryService.getStockByProductId(productId);
+  }
+
+  double getMemberTotalCredit(String memberId) {
+    return _inventoryService.getMemberTotalCredit(memberId);
+  }
+
+  /// Get member's total credit for current inventory season
+  Future<double> getMemberSeasonCredit(String memberId) {
+    return _inventoryService.getMemberSeasonCredit(memberId);
+  }
+
+  List<Sale> getMemberCreditSales(String memberId) {
+    return _inventoryService.getMemberCreditSales(memberId);
+  }
+
+  void showProductForm() {
+    _clearProductForm();
+  }
+
+  void showSaleForm() {
+    _clearSaleForm();
+  }
+
+  void setSaleType(String type) {
+    saleType.value = type;
+    if (type == 'CASH') {
+      selectedMember.value = null;
+    }
+  }
+
+  void setSelectedMember(Member? member) {
+    selectedMember.value = member;
+  }
+
+  void setSelectedCategory(ProductCategory? category) {
+    selectedCategory.value = category;
+    // Auto-enable split for Fertilizer category by default
+    if (category != null && category.name.toLowerCase() == 'fertilizer') {
+      canBeSplit.value = true;
+    } else {
+      // Preserve user choice for other categories but default to false when none selected
+      if (canBeSplit.value && category == null) {
+        canBeSplit.value = false;
+      } else if (category != null && canBeSplit.value) {
+        // keep existing user-enabled value for non-fertilizer if explicitly set
+      } else {
+        canBeSplit.value = false;
+      }
+    }
+  }
+
+  void setSelectedUnit(UnitOfMeasure? unit) {
+    selectedUnit.value = unit;
+  }
+
+  // Category Management
+  Future<bool> deleteCategory(String categoryId) async {
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      final result = await _inventoryService.deleteCategory(categoryId);
+
+      if (result['success']) {
+        Get.snackbar(
+          'Success',
+          'Category deleted successfully',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      } else {
+        throw Exception(result['error']);
+      }
+
+      return result['success'];
+    } catch (e) {
+      error.value = e.toString();
+      Get.snackbar(
+        'Error',
+        e.toString(),
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  Future<bool> canDeleteCategory(String categoryId) async {
+    return await _inventoryService.canDeleteCategory(categoryId);
+  }
+
+  Future<List<Product>> getProductsInCategory(String categoryId) async {
+    return await _inventoryService.getProductsInCategory(categoryId);
+  }
+
+  // Product Management
+  Future<bool> deleteProduct(String productId) async {
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      final success = await _inventoryService.deleteProduct(productId);
+
+      if (success) {
+        Get.snackbar(
+          'Success',
+          'Product deleted successfully',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      }
+
+      return success;
+    } catch (e) {
+      error.value = e.toString();
+      Get.snackbar(
+        'Error',
+        e.toString(),
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  Future<bool> canDeleteProduct(String productId) async {
+    return await _inventoryService.canDeleteProduct(productId);
+  }
+
+  Future<List<Map<String, dynamic>>> getProductSalesHistory(
+    String productId,
+  ) async {
+    return await _inventoryService.getProductSalesHistory(productId);
+  }
+
+  // Stock Management Enhanced
+  Future<List<StockMovement>> getStockMovements(String productId) async {
+    return await _inventoryService.getStockMovements(productId);
+  }
+
+  List<Product> get lowStockProducts => _inventoryService.lowStockProducts;
+  List<Product> get outOfStockProducts => _inventoryService.outOfStockProducts;
+
+  double get totalStockValue => _inventoryService.getTotalStockValue();
+  Map<String, int> get categoryProductCounts =>
+      _inventoryService.getCategoryProductCounts();
+
+  // Split Product Management
+  Future<bool> splitProduct({
+    required String productId,
+    required double splitSize,
+  }) async {
+    isLoading.value = true;
+    error.value = '';
+
+    try {
+      final user = _authService.currentUser.value;
+      final result = await _inventoryService.splitProduct(
+        productId: productId,
+        splitSize: splitSize,
+        userId: user?.id,
+        userName: user?.fullName,
+      );
+
+      if (result['success']) {
+        await refreshInventoryData();
+        Get.snackbar(
+          'Success',
+          'Product split successfully',
+          backgroundColor: Colors.green,
+          colorText: Colors.white,
+        );
+      } else {
+        throw Exception(result['error']);
+      }
+
+      return result['success'];
+    } catch (e) {
+      error.value = e.toString();
+      Get.snackbar(
+        'Error',
+        e.toString(),
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+      );
+      return false;
+    } finally {
+      isLoading.value = false;
+    }
+  }
+
+  Future<List<Product>> getSplitProducts(String parentProductId) async {
+    return await _inventoryService.getSplitProducts(parentProductId);
+  }
+
+  Future<bool> hasBeenSplit(String productId) async {
+    return await _inventoryService.hasBeenSplit(productId);
+  }
+
+  void addPackSize(double size) {
+    if (!packSizes.contains(size)) {
+      packSizes.add(size);
+      packSizes.sort();
+    }
+  }
+
+  void removePackSize(double size) {
+    packSizes.remove(size);
+  }
+}

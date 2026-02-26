@@ -1,0 +1,29 @@
+{
+  "dart.flutterHotReloadOnSave": "always",
+  "dart.hotReloadOnSave": true,
+  "dart.previewHotReloadOnSaveWatcher": true,
+  "dart.enableSdkFormatter": true,
+  "dart.showInspectorNotificationsForWidgetErrors": false,
+  "editor.formatOnSave": true,
+  "editor.formatOnType": true,
+  "editor.rulers": [80],
+  "editor.codeActionsOnSave": {
+    "source.fixAll": "explicit",
+    "source.organizeImports": "explicit"
+  },
+  "dart.lineLength": 80,
+  "dart.debugExtensionBackendProtocol": "sse",
+  "terminal.integrated.env.windows": {
+    "FLUTTER_WATCH_TIMEOUT": "180",
+    "FLUTTER_BUILD_TIMEOUT": "600"
+  },
+  "dart.devToolsTheme": "light",
+  "dart.analyzerSshHost": null,
+  "dart.analyzerVmServicePort": 0,
+  "dart.allowAnalytics": false,
+  "dart.analyzeAngularTemplates": false,
+  "dart.enableCompletionCommitCharacters": false,
+  "dart.closingLabels": false,
+  "dart.showTodos": false,
+  "kiroAgent.configureMCP": "Disabled"
+} 
