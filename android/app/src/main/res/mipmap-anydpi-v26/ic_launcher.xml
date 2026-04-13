@@ -3,3 +3,9 @@
   <background android:drawable="@mipmap/ic_launcher_adaptive_back"/>
   <foreground android:drawable="@mipmap/ic_launcher_adaptive_fore"/>
 </adaptive-icon>
+
+
+
+0: 3 icons to have outline and no background
+1: Dashbord cards same alignmnent XXXX instead 
+2. Toggle pin dialog no buttons

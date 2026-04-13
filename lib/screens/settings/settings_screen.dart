@@ -45,12 +45,12 @@ class SettingsScreen extends StatelessWidget {
 
           // Bluetooth Debug (for troubleshooting)
 
-          // Navision Integration
+          // Server Sync
           _buildSettingsCard(
             context,
-            title: 'Navision Integration',
+            title: 'Server Sync',
             description:
-                'Configure Microsoft Dynamics 365 Business Central integration',
+                'Configure & Sync data with backend server for data backup and reporting',
             icon: Icons.sync_alt,
             onTap: () => Get.toNamed(AppConstants.navisionSettingsRoute),
           ),

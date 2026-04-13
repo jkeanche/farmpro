@@ -11,3 +11,4 @@ export 'navision_service.dart';
 export 'print_service.dart';
 export 'permission_service.dart';
 export 'sms_service.dart';
+export 'desktop_sync_service.dart';
