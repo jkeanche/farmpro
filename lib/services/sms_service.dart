@@ -735,72 +735,76 @@ class SmsService extends GetxService {
     }
   }
 
-  /// Private method to send SMS with gateway-first logic and SIM fallback
   Future<bool> _sendViaGatewayWithFallback(
     String phoneNumber,
     String message,
   ) async {
     try {
-      print('🔄 [GATEWAY-FIRST] Starting SMS send to $phoneNumber');
+      final settings = _settingsService.systemSettings.value;
+      final mode = settings.smsMode; // 'sim' or 'gateway'
 
-      // Get SMS gateway configuration from settings
-      final settingsService = Get.find<SettingsService>();
-      final settings = settingsService.systemSettings.value;
-
-      // Attempt gateway first if enabled and configured
-      if (settings.smsGatewayEnabled &&
-          settings.smsGatewayUsername.isNotEmpty &&
-          settings.smsGatewayPassword.isNotEmpty) {
-        print('📡 [GATEWAY-FIRST] Attempting SMS via gateway...');
-
-        try {
-          final gatewaySuccess = await sendSmsViaGateway(phoneNumber, message);
-
-          if (gatewaySuccess) {
-            print('✅ [GATEWAY-FIRST] SMS sent successfully via gateway');
-            return true;
-          } else {
-            print(
-              '❌ [GATEWAY-FIRST] Gateway failed, checking fallback options...',
-            );
-          }
-        } catch (e) {
-          print('❌ [GATEWAY-FIRST] Gateway exception: $e');
+      if (mode == 'gateway') {
+        // ── GATEWAY MODE ────────────────────────────────────────
+        if (!settings.isGatewayConfigured) {
+          print('❌ [SMS] Gateway mode selected but credentials are missing.');
+          Get.snackbar(
+            'SMS Gateway Not Configured',
+            'Gateway SMS mode is active but credentials are incomplete. '
+                'Go to Settings → System Settings → SMS Configuration to '
+                'add your gateway username, password and sender ID, '
+                'or switch to SIM Card mode.',
+            backgroundColor: const Color(0xFFB71C1C),
+            colorText: Colors.white,
+            duration: const Duration(seconds: 7),
+            snackPosition: SnackPosition.BOTTOM,
+            margin: const EdgeInsets.all(12),
+            icon: const Icon(Icons.sms_failed, color: Colors.white),
+          );
+          return false;
         }
-      } else {
-        print(
-          '⚠️ [GATEWAY-FIRST] Gateway not configured, skipping to fallback',
+
+        print('📡 [SMS] GATEWAY MODE → sending to $phoneNumber');
+        bool gatewaySuccess = false;
+        try {
+          gatewaySuccess = await sendSmsViaGateway(phoneNumber, message);
+        } catch (e) {
+          print('❌ [SMS] Gateway exception: $e');
+        }
+
+        if (gatewaySuccess) {
+          print('✅ [SMS] Gateway delivery succeeded');
+          return true;
+        }
+
+        // Gateway failed — try SIM fallback if enabled
+        if (settings.smsGatewayFallbackToSim) {
+          print('📱 [SMS] Gateway failed → SIM fallback...');
+          final simResult = await _sendDirectSmsInternal(phoneNumber, message);
+          if (simResult) {
+            print('✅ [SMS] SIM fallback succeeded');
+            return true;
+          }
+        }
+
+        print('❌ [SMS] Gateway failed and no successful fallback.');
+        Get.snackbar(
+          'SMS Failed',
+          'Could not send via SMS Gateway. '
+              'Check your gateway credentials in Settings or enable SIM fallback.',
+          backgroundColor: Colors.orange.shade800,
+          colorText: Colors.white,
+          duration: const Duration(seconds: 5),
+          snackPosition: SnackPosition.BOTTOM,
+          margin: const EdgeInsets.all(12),
         );
-      }
-
-      // Fallback to SIM card if gateway failed and fallback is enabled
-      if (settings.smsGatewayFallbackToSim) {
-        print('📱 [GATEWAY-FIRST] Attempting SIM fallback...');
-
-        try {
-          final simSuccess = await _sendDirectSmsInternal(phoneNumber, message);
-
-          if (simSuccess) {
-            print('✅ [GATEWAY-FIRST] SMS sent successfully via SIM fallback');
-            return true;
-          } else {
-            print('❌ [GATEWAY-FIRST] SIM fallback also failed');
-          }
-        } catch (e) {
-          print('❌ [GATEWAY-FIRST] SIM fallback exception: $e');
-        }
+        return false;
       } else {
-        print('⚠️ [GATEWAY-FIRST] SIM fallback disabled in settings');
+        // ── SIM CARD MODE (default) ────────────────────────────
+        print('📱 [SMS] SIM CARD MODE → sending to $phoneNumber');
+        return await _sendDirectSmsInternal(phoneNumber, message);
       }
-
-      print(
-        '❌ [GATEWAY-FIRST] All SMS sending methods failed for $phoneNumber',
-      );
-      return false;
     } catch (e) {
-      print(
-        '❌ [GATEWAY-FIRST] Critical error in _sendViaGatewayWithFallback: $e',
-      );
+      print('❌ [SMS] _sendViaGatewayWithFallback error: $e');
       return false;
     }
   }

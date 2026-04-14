@@ -25,17 +25,18 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
   bool _enableBluetoothScale = true;
   String? _defaultPrinterAddress;
   String? _defaultScaleAddress;
-  double _defaultTareWeight = 0.5; // Default tare weight for coffee containers
-  String _printMethod = 'bluetooth'; // Default print method
-  int _receiptDuplicates = 1; // Number of receipt copies for inventory sales
-  bool _autoDisconnectScale =
-      false; // Auto disconnect scale when leaving screen
-  String _deliveryRestrictionMode =
-      'multiple'; // Default to multiple deliveries per day
+  double _defaultTareWeight = 0.5;
+  String _printMethod = 'bluetooth';
+  int _receiptDuplicates = 1;
+  bool _autoDisconnectScale = false;
+  String _deliveryRestrictionMode = 'multiple';
   final _coffeeProductController = TextEditingController();
 
+  // ── SMS MODE: 'sim' or 'gateway' ──────────────────────────
+  String _smsMode = 'sim';
+
   // SMS Gateway Configuration
-  bool _smsGatewayEnabled = true;
+  bool _smsGatewayEnabled = false;
   String _smsGatewayUrl = 'https://portal.zettatel.com/SMSApi/send';
   final _smsGatewayUsernameController = TextEditingController();
   final _smsGatewayPasswordController = TextEditingController();
@@ -43,10 +44,15 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
   final _smsGatewayApiKeyController = TextEditingController();
   bool _smsGatewayFallbackToSim = true;
 
+  bool get _gatewayConfigured =>
+      _smsGatewayUrl.isNotEmpty &&
+      _smsGatewayUsernameController.text.trim().isNotEmpty &&
+      _smsGatewayPasswordController.text.trim().isNotEmpty &&
+      _smsGatewaySenderIdController.text.trim().isNotEmpty;
+
   @override
   void initState() {
     super.initState();
-    // Load settings and then load sensitive settings from secure storage
     _loadSettings().then((_) => _loadSensitiveSettings());
   }
 
@@ -63,9 +69,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
   Future<void> _loadSettings() async {
     final settings = _settingsController.systemSettings.value;
     if (settings != null) {
-      print(
-        '🔧 SystemSettingsScreen: Loading defaultTareWeight = ${settings.defaultTareWeight}',
-      );
       if (mounted) {
         setState(() {
           _enablePrinting = settings.enablePrinting;
@@ -81,7 +84,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
           _deliveryRestrictionMode = settings.deliveryRestrictionMode;
           _coffeeProductController.text = settings.coffeeProduct;
 
-          // SMS Gateway Configuration
+          // SMS mode
+          _smsMode = settings.smsMode;
           _smsGatewayEnabled = settings.smsGatewayEnabled;
           _smsGatewayUrl = settings.smsGatewayUrl;
           _smsGatewayUsernameController.text = settings.smsGatewayUsername;
@@ -96,11 +100,9 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
 
   Future<void> _loadSensitiveSettings() async {
     try {
-      // Get the current settings from the controller
       final settings = _settingsController.systemSettings.value;
       if (mounted && settings != null) {
         setState(() {
-          // Update SMS Gateway settings with current values
           _smsGatewayUsernameController.text = settings.smsGatewayUsername;
           _smsGatewayPasswordController.text = settings.smsGatewayPassword;
           _smsGatewaySenderIdController.text = settings.smsGatewaySenderId;
@@ -112,13 +114,13 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     }
   }
 
+  // ── BLUETOOTH HELPERS ───────────────────────────────────────
+
   Future<void> _scanBluetoothDevices() async {
     try {
-      // First check if Bluetooth is available and enabled
       bool bluetoothEnabled = await _bluetoothService.isBluetoothEnabled();
       if (!bluetoothEnabled) {
         await _bluetoothService.requestBluetoothEnable();
-        // Double check if user granted it
         bluetoothEnabled = await _bluetoothService.isBluetoothEnabled();
         if (!bluetoothEnabled) {
           Get.snackbar(
@@ -133,7 +135,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
         }
       }
 
-      // Check and request permissions using PermissionService
       bool hasPermissions = await _permissionService.checkBluetoothPermission();
       if (!hasPermissions) {
         hasPermissions = await _permissionService.requestBluetoothPermission();
@@ -150,10 +151,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
         }
       }
 
-      // Start BLE scan
       await _settingsController.scanBluetoothDevices();
 
-      // If no devices were found after scanning
       if (_bluetoothService.devices.isEmpty) {
         Get.snackbar(
           'No Devices Found',
@@ -180,10 +179,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
   Future<void> _connectToPrinter(String deviceAddress) async {
     try {
       await _settingsController.connectToPrinter(deviceAddress);
-      setState(() {
-        _defaultPrinterAddress = deviceAddress;
-      });
-
+      setState(() => _defaultPrinterAddress = deviceAddress);
       Get.snackbar(
         'Success',
         'Connected to printer',
@@ -211,7 +207,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
         _defaultScaleAddress = deviceAddress;
         _enableBluetoothScale = true;
       });
-
       Get.snackbar(
         'Success',
         'Connected to scale',
@@ -232,19 +227,16 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     }
   }
 
-  // Connect to classic Bluetooth scale with manual pairing
   Future<void> _connectToClassicScale(String address) async {
     try {
       bool connected = await _bluetoothService.connectToClassicDeviceByAddress(
         address,
       );
-
       if (connected) {
         setState(() {
           _defaultScaleAddress = address;
           _enableBluetoothScale = true;
         });
-
         Get.snackbar(
           'Scale Connected',
           'Successfully connected to classic Bluetooth scale',
@@ -264,72 +256,32 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     }
   }
 
-  // Show classic Bluetooth setup instructions
-  void _showClassicBluetoothInstructions() {
-    _bluetoothService.showClassicBluetoothPairingInstructions();
-  }
+  void _showClassicBluetoothInstructions() =>
+      _bluetoothService.showClassicBluetoothPairingInstructions();
 
-  // Add paired classic Bluetooth device
-  void _addPairedDevice() {
-    _bluetoothService.showAddPairedDeviceDialog();
-  }
+  void _addPairedDevice() => _bluetoothService.showAddPairedDeviceDialog();
+
+  // ── SAVE ───────────────────────────────────────────────────
 
   Future<void> _saveSettings() async {
     try {
-      // Validate SMS gateway configuration if enabled
-      if (_smsGatewayEnabled) {
-        final username = _smsGatewayUsernameController.text.trim();
-        final password = _smsGatewayPasswordController.text.trim();
-        final senderId = _smsGatewaySenderIdController.text.trim();
-
-        if (username.isEmpty) {
+      // Validate gateway config if gateway mode is selected
+      if (_smsMode == 'gateway') {
+        if (!_gatewayConfigured) {
           Get.snackbar(
-            'Validation Error',
-            'SMS Gateway username is required when gateway is enabled',
-            snackPosition: SnackPosition.BOTTOM,
-            backgroundColor: Colors.red,
+            'Gateway Not Configured',
+            'You have selected Gateway SMS mode but the gateway credentials are incomplete. '
+                'Please fill in Username, Password, and Sender ID, or switch to SIM Card mode.',
+            backgroundColor: Colors.orange.shade700,
             colorText: Colors.white,
-          );
-          return;
-        }
-
-        if (password.isEmpty) {
-          Get.snackbar(
-            'Validation Error',
-            'SMS Gateway password is required when gateway is enabled',
             snackPosition: SnackPosition.BOTTOM,
-            backgroundColor: Colors.red,
-            colorText: Colors.white,
+            duration: const Duration(seconds: 6),
+            margin: const EdgeInsets.all(12),
           );
-          return;
-        }
-
-        if (senderId.isEmpty) {
-          Get.snackbar(
-            'Validation Error',
-            'SMS Gateway Sender ID is required when gateway is enabled',
-            snackPosition: SnackPosition.BOTTOM,
-            backgroundColor: Colors.red,
-            colorText: Colors.white,
-          );
-          return;
-        }
-
-        // Validate URL format
-        final uri = Uri.tryParse(_smsGatewayUrl);
-        if (_smsGatewayUrl.isEmpty || uri == null || !uri.hasAbsolutePath) {
-          Get.snackbar(
-            'Validation Error',
-            'Please enter a valid SMS Gateway URL',
-            snackPosition: SnackPosition.BOTTOM,
-            backgroundColor: Colors.red,
-            colorText: Colors.white,
-          );
-          return;
+          // Still allow saving so user can fill credentials
         }
       }
 
-      // Check if coffee product has changed
       final originalSettings = _settingsController.systemSettings.value;
       final newCoffeeProduct = _coffeeProductController.text.toUpperCase();
       final hasProductChanged =
@@ -337,25 +289,15 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
           originalSettings.coffeeProduct.toUpperCase() != newCoffeeProduct;
 
       if (hasProductChanged) {
-        // Check if there are existing collections
         final coffeeCollectionService = Get.find<CoffeeCollectionService>();
         final hasCollections = coffeeCollectionService.collections.isNotEmpty;
-
         if (hasCollections) {
-          // Show confirmation dialog
           final confirmed = await _showCropChangeConfirmationDialog();
-          if (!confirmed) {
-            return; // User cancelled
-          }
-
-          // Backup database (preserve all data)
+          if (!confirmed) return;
           await _backupDatabaseForCropChange();
         }
       }
 
-      print(
-        '💾 SystemSettingsScreen: Saving defaultTareWeight = $_defaultTareWeight',
-      );
       await _settingsController.updateSystemSettings(
         enablePrinting: _enablePrinting,
         enableSms: _enableSms,
@@ -369,8 +311,9 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
         coffeeProduct: _coffeeProductController.text,
         autoDisconnectScale: _autoDisconnectScale,
         deliveryRestrictionMode: _deliveryRestrictionMode,
-        // SMS Gateway Configuration
-        smsGatewayEnabled: _smsGatewayEnabled,
+        // SMS mode
+        smsMode: _smsMode,
+        smsGatewayEnabled: _smsMode == 'gateway',
         smsGatewayUrl: _smsGatewayUrl,
         smsGatewayUsername: _smsGatewayUsernameController.text,
         smsGatewayPassword: _smsGatewayPasswordController.text,
@@ -379,7 +322,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
         smsGatewayFallbackToSim: _smsGatewayFallbackToSim,
       );
 
-      // Update PrintService with the selected print method
       if (_printMethod == 'bluetooth') {
         _printService.setPrintMethod('bluetooth');
       } else {
@@ -387,7 +329,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
       }
 
       Get.back();
-
       Get.snackbar(
         'Success',
         'Settings updated successfully',
@@ -430,7 +371,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     ),
                     SizedBox(height: 16),
                     Text(
-                      'All your data will be retained. You can switch back to the previous crop type at any time to access historical collections.',
+                      'All your data will be retained.',
                       style: TextStyle(
                         color: Colors.green,
                         fontWeight: FontWeight.bold,
@@ -459,7 +400,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
 
   Future<void> _backupDatabaseForCropChange() async {
     try {
-      // Show loading dialog
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -475,30 +415,19 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
               ),
             ),
       );
-
       final databaseHelper = Get.find<DatabaseHelper>();
-
-      // Create database backup (preserve all data)
       await databaseHelper.backupDatabase();
-
-      // Close loading dialog
       Navigator.of(context).pop();
-
       Get.snackbar(
         'Backup Complete',
-        'Database backed up successfully. All data has been preserved.',
+        'Database backed up successfully.',
         snackPosition: SnackPosition.BOTTOM,
         backgroundColor: Colors.green,
         colorText: Colors.white,
         duration: const Duration(seconds: 3),
       );
     } catch (e) {
-      // Close loading dialog if still open
-      if (Navigator.of(context).canPop()) {
-        Navigator.of(context).pop();
-      }
-
-      print('Error backing up database: $e');
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
       Get.snackbar(
         'Backup Error',
         'Failed to backup database: $e',
@@ -506,16 +435,16 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
         backgroundColor: Colors.red,
         colorText: Colors.white,
       );
-      rethrow; // Re-throw to prevent settings save
+      rethrow;
     }
   }
 
-  // Show dialog to set default tare weight
+  // ── DIALOGS ────────────────────────────────────────────────
+
   void _showTareWeightDialog(BuildContext context) {
-    final TextEditingController tareWeightController = TextEditingController(
+    final controller = TextEditingController(
       text: _defaultTareWeight.toStringAsFixed(1),
     );
-
     showDialog(
       context: context,
       builder:
@@ -525,12 +454,11 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 const Text(
-                  'Set the default tare weight for coffee containers. This value will be pre-filled during coffee collection.',
-                  style: TextStyle(fontSize: 14),
+                  'Set the default tare weight for coffee containers.',
                 ),
                 const SizedBox(height: 16),
                 TextField(
-                  controller: tareWeightController,
+                  controller: controller,
                   keyboardType: const TextInputType.numberWithOptions(
                     decimal: true,
                   ),
@@ -549,25 +477,10 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
               ),
               ElevatedButton(
                 onPressed: () {
-                  final newValue = double.tryParse(tareWeightController.text);
-                  if (newValue != null && newValue >= 0) {
-                    print(
-                      '📏 Setting new tare weight: $newValue (was: $_defaultTareWeight)',
-                    );
-                    setState(() {
-                      _defaultTareWeight = newValue;
-                    });
+                  final v = double.tryParse(controller.text);
+                  if (v != null && v >= 0) {
+                    setState(() => _defaultTareWeight = v);
                     Navigator.of(context).pop();
-
-                    // Show confirmation that the value has been updated locally
-                    Get.snackbar(
-                      'Tare Weight Updated',
-                      'New default tare weight: ${newValue.toStringAsFixed(1)} kg\nRemember to save settings to apply changes.',
-                      snackPosition: SnackPosition.BOTTOM,
-                      backgroundColor: Colors.blue,
-                      colorText: Colors.white,
-                      duration: const Duration(seconds: 3),
-                    );
                   } else {
                     Get.snackbar(
                       'Error',
@@ -585,7 +498,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     );
   }
 
-  // Show dialog to select print method
   void _showPrintMethodDialog(BuildContext context) {
     showDialog(
       context: context,
@@ -600,10 +512,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                   subtitle: const Text('Use a Bluetooth thermal printer'),
                   value: 'bluetooth',
                   groupValue: _printMethod,
-                  onChanged: (value) {
-                    setState(() {
-                      _printMethod = value!;
-                    });
+                  onChanged: (v) {
+                    setState(() => _printMethod = v!);
                     Navigator.of(context).pop();
                   },
                 ),
@@ -612,10 +522,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                   subtitle: const Text('Use system printer or PDF export'),
                   value: 'standard',
                   groupValue: _printMethod,
-                  onChanged: (value) {
-                    setState(() {
-                      _printMethod = value!;
-                    });
+                  onChanged: (v) {
+                    setState(() => _printMethod = v!);
                     Navigator.of(context).pop();
                   },
                 ),
@@ -631,7 +539,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     );
   }
 
-  // Show dialog to select collection restriction mode
   void _showCollectionRestrictionDialog(BuildContext context) {
     showDialog(
       context: context,
@@ -653,10 +560,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                   ),
                   value: 'multiple',
                   groupValue: _deliveryRestrictionMode,
-                  onChanged: (value) {
-                    setState(() {
-                      _deliveryRestrictionMode = value!;
-                    });
+                  onChanged: (v) {
+                    setState(() => _deliveryRestrictionMode = v!);
                     Navigator.of(context).pop();
                   },
                 ),
@@ -667,10 +572,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                   ),
                   value: 'single',
                   groupValue: _deliveryRestrictionMode,
-                  onChanged: (value) {
-                    setState(() {
-                      _deliveryRestrictionMode = value!;
-                    });
+                  onChanged: (v) {
+                    setState(() => _deliveryRestrictionMode = v!);
                     Navigator.of(context).pop();
                   },
                 ),
@@ -686,7 +589,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     );
   }
 
-  // Show dialog to select number of receipt copies for inventory sales
   void _showReceiptCopiesDialog(BuildContext context) {
     showDialog(
       context: context,
@@ -706,10 +608,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                   subtitle: const Text('Print one receipt per sale'),
                   value: 1,
                   groupValue: _receiptDuplicates,
-                  onChanged: (value) {
-                    setState(() {
-                      _receiptDuplicates = value!;
-                    });
+                  onChanged: (v) {
+                    setState(() => _receiptDuplicates = v!);
                     Navigator.of(context).pop();
                   },
                 ),
@@ -718,10 +618,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                   subtitle: const Text('Print two receipts per sale'),
                   value: 2,
                   groupValue: _receiptDuplicates,
-                  onChanged: (value) {
-                    setState(() {
-                      _receiptDuplicates = value!;
-                    });
+                  onChanged: (v) {
+                    setState(() => _receiptDuplicates = v!);
                     Navigator.of(context).pop();
                   },
                 ),
@@ -737,12 +635,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     );
   }
 
-  // Show dialog to set SMS Gateway URL
   void _showSmsGatewayUrlDialog(BuildContext context) {
-    final TextEditingController urlController = TextEditingController(
-      text: _smsGatewayUrl,
-    );
-
+    final controller = TextEditingController(text: _smsGatewayUrl);
     showDialog(
       context: context,
       builder:
@@ -752,17 +646,16 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 const Text(
-                  'Enter the SMS gateway API endpoint URL. This is typically provided by your SMS service provider.',
+                  'Enter the SMS gateway API endpoint URL.',
                   style: TextStyle(fontSize: 14),
                 ),
                 const SizedBox(height: 16),
                 TextField(
-                  controller: urlController,
+                  controller: controller,
                   keyboardType: TextInputType.url,
                   decoration: const InputDecoration(
                     labelText: 'Gateway URL',
                     border: OutlineInputBorder(),
-                    hintText: 'https://api.smsgateway.com/send',
                   ),
                 ),
               ],
@@ -774,29 +667,9 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
               ),
               ElevatedButton(
                 onPressed: () {
-                  final newUrl = urlController.text.trim();
-                  if (newUrl.isNotEmpty) {
-                    setState(() {
-                      _smsGatewayUrl = newUrl;
-                    });
+                  if (controller.text.trim().isNotEmpty) {
+                    setState(() => _smsGatewayUrl = controller.text.trim());
                     Navigator.of(context).pop();
-
-                    Get.snackbar(
-                      'Gateway URL Updated',
-                      'SMS gateway URL has been updated. Remember to save settings to apply changes.',
-                      snackPosition: SnackPosition.BOTTOM,
-                      backgroundColor: Colors.blue,
-                      colorText: Colors.white,
-                      duration: const Duration(seconds: 3),
-                    );
-                  } else {
-                    Get.snackbar(
-                      'Error',
-                      'Please enter a valid URL',
-                      snackPosition: SnackPosition.BOTTOM,
-                      backgroundColor: Colors.red,
-                      colorText: Colors.white,
-                    );
                   }
                 },
                 child: const Text('Save'),
@@ -806,10 +679,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     );
   }
 
-  // Refresh default printer
   Future<void> _refreshDefaultPrinter(BuildContext context) async {
     try {
-      // Show loading dialog
       showDialog(
         context: context,
         barrierDismissible: false,
@@ -825,14 +696,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
               ),
             ),
       );
-
-      // Refresh and select default printer
       await _printService.refreshAndSelectDefaultPrinter();
-
-      // Close loading dialog
       Navigator.of(context).pop();
-
-      // Show success message
       Get.snackbar(
         'Success',
         'Default printer refreshed successfully',
@@ -841,12 +706,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
         colorText: Colors.white,
       );
     } catch (e) {
-      // Close loading dialog if still open
-      if (Navigator.of(context).canPop()) {
-        Navigator.of(context).pop();
-      }
-
-      print('Error refreshing default printer: $e');
+      if (Navigator.of(context).canPop()) Navigator.of(context).pop();
       Get.snackbar(
         'Error',
         'Failed to refresh default printer: $e',
@@ -857,6 +717,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
     }
   }
 
+  // ── BUILD ──────────────────────────────────────────────────
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -866,7 +728,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            // General Settings
+            // ── GENERAL SETTINGS ────────────────────────────────
             CustomCard(
               padding: const EdgeInsets.all(16.0),
               child: Column(
@@ -877,62 +739,39 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   const SizedBox(height: 16.0),
-
-                  // Enable Printing
                   SwitchListTile(
                     title: const Text('Enable Printing'),
                     subtitle: const Text(
                       'Automatically print receipts after coffee collection',
                     ),
                     value: _enablePrinting,
-                    onChanged: (value) {
-                      setState(() {
-                        _enablePrinting = value;
-                      });
-                    },
+                    onChanged: (v) => setState(() => _enablePrinting = v),
                     activeColor: Theme.of(context).colorScheme.primary,
                   ),
-
-                  // Enable SMS
                   SwitchListTile(
                     title: const Text('Enable SMS Notifications'),
                     subtitle: const Text('Send SMS notifications to members'),
                     value: _enableSms,
-                    onChanged: (value) {
-                      setState(() {
-                        _enableSms = value;
-                      });
-                    },
+                    onChanged: (v) => setState(() => _enableSms = v),
                     activeColor: Theme.of(context).colorScheme.primary,
                   ),
-
-                  // Enable Manual Weight Entry
                   SwitchListTile(
                     title: const Text('Enable Manual Weight Entry'),
-                    subtitle: const Text('Allow manual entry of coffee weight'),
+                    subtitle: const Text(
+                      'Allow manual entry of coffee weight (Admins/Managers only)',
+                    ),
                     value: _enableManualWeightEntry,
-                    onChanged: (value) {
-                      setState(() {
-                        _enableManualWeightEntry = value;
-                      });
-                    },
+                    onChanged:
+                        (v) => setState(() => _enableManualWeightEntry = v),
                     activeColor: Theme.of(context).colorScheme.primary,
                   ),
-
-                  // Enable Bluetooth Scale
                   SwitchListTile(
                     title: const Text('Enable Bluetooth Scale'),
                     subtitle: const Text('Connect to Bluetooth weighing scale'),
                     value: _enableBluetoothScale,
-                    onChanged: (value) {
-                      setState(() {
-                        _enableBluetoothScale = value;
-                      });
-                    },
+                    onChanged: (v) => setState(() => _enableBluetoothScale = v),
                     activeColor: Theme.of(context).colorScheme.primary,
                   ),
-
-                  // Auto Disconnect Scale
                   SwitchListTile(
                     title: const Text('Auto Disconnect Scale'),
                     subtitle: const Text(
@@ -941,25 +780,18 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     value: _autoDisconnectScale,
                     onChanged:
                         _enableBluetoothScale
-                            ? (value) {
-                              setState(() {
-                                _autoDisconnectScale = value;
-                              });
-                            }
-                            : null, // Disable if Bluetooth scale is not enabled
+                            ? (v) => setState(() => _autoDisconnectScale = v)
+                            : null,
                     activeColor: Theme.of(context).colorScheme.primary,
                   ),
-
                   const Divider(),
-
-                  // Collection Restriction Mode
                   ListTile(
                     leading: const Icon(Icons.repeat),
                     title: const Text('Daily Collection Limit'),
                     subtitle: Text(
                       _deliveryRestrictionMode == 'single'
-                          ? 'Single - Members can only make one collection per day'
-                          : 'Multiple - Members can make multiple collections per day',
+                          ? 'Single - one collection per day'
+                          : 'Multiple - unlimited collections per day',
                     ),
                     trailing: const Icon(Icons.settings, size: 16),
                     onTap: () => _showCollectionRestrictionDialog(context),
@@ -969,188 +801,292 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
             ),
             const SizedBox(height: 16.0),
 
-            // SMS Gateway Configuration
+            // ── SMS CONFIGURATION ────────────────────────────────
             CustomCard(
               padding: const EdgeInsets.all(16.0),
               child: Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    'SMS Gateway Configuration',
+                    'SMS Configuration',
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   const SizedBox(height: 16.0),
 
-                  // Enable SMS Gateway
-                  SwitchListTile(
-                    title: const Text('Enable SMS Gateway'),
-                    subtitle: const Text(
-                      'Use SMS gateway service for sending messages',
+                  // ── SMS MODE TOGGLE ──────────────────────────────
+                  Text(
+                    'SMS Sending Mode',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.bold,
                     ),
-                    value: _smsGatewayEnabled,
-                    onChanged: (value) {
-                      setState(() {
-                        _smsGatewayEnabled = value;
-                      });
-                    },
-                    activeColor: Theme.of(context).colorScheme.primary,
+                  ),
+                  const SizedBox(height: 8),
+                  Container(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Colors.grey.shade300),
+                      borderRadius: BorderRadius.circular(10),
+                      color: Colors.grey.shade50,
+                    ),
+                    child: Column(
+                      children: [
+                        RadioListTile<String>(
+                          value: 'sim',
+                          groupValue: _smsMode,
+                          onChanged: (v) => setState(() => _smsMode = v!),
+                          title: Row(
+                            children: const [
+                              Icon(
+                                Icons.sim_card,
+                                size: 20,
+                                color: Colors.blue,
+                              ),
+                              SizedBox(width: 8),
+                              Text('SIM Card SMS'),
+                            ],
+                          ),
+                          subtitle: const Text(
+                            'Send SMS directly from this device\'s SIM card.',
+                            style: TextStyle(fontSize: 12),
+                          ),
+                          activeColor: Colors.blue,
+                        ),
+                        const Divider(height: 1, indent: 16, endIndent: 16),
+                        RadioListTile<String>(
+                          value: 'gateway',
+                          groupValue: _smsMode,
+                          onChanged: (v) => setState(() => _smsMode = v!),
+                          title: Row(
+                            children: [
+                              Icon(
+                                Icons.cloud_upload_outlined,
+                                size: 20,
+                                color:
+                                    _gatewayConfigured
+                                        ? Colors.green
+                                        : Colors.orange,
+                              ),
+                              const SizedBox(width: 8),
+                              const Text('Gateway / Bulk SMS'),
+                              const SizedBox(width: 6),
+                              if (!_gatewayConfigured)
+                                Container(
+                                  padding: const EdgeInsets.symmetric(
+                                    horizontal: 6,
+                                    vertical: 2,
+                                  ),
+                                  decoration: BoxDecoration(
+                                    color: Colors.orange.shade100,
+                                    borderRadius: BorderRadius.circular(8),
+                                  ),
+                                  child: const Text(
+                                    'NOT CONFIGURED',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      color: Colors.orange,
+                                      fontWeight: FontWeight.bold,
+                                    ),
+                                  ),
+                                ),
+                            ],
+                          ),
+                          subtitle: Text(
+                            _gatewayConfigured
+                                ? 'Use the configured SMS gateway for all notifications.'
+                                : 'Requires gateway credentials below. SMS will fail until configured.',
+                            style: TextStyle(
+                              fontSize: 12,
+                              color:
+                                  _gatewayConfigured
+                                      ? null
+                                      : Colors.orange.shade800,
+                            ),
+                          ),
+                          activeColor: Colors.green,
+                        ),
+                      ],
+                    ),
                   ),
 
-                  if (_smsGatewayEnabled) ...[
-                    const Divider(),
-
-                    // SMS Gateway URL
-                    ListTile(
-                      leading: const Icon(Icons.link),
-                      title: const Text('Gateway URL'),
-                      subtitle: Text(_smsGatewayUrl),
-                      trailing: const Icon(Icons.edit, size: 16),
-                      onTap: () => _showSmsGatewayUrlDialog(context),
-                    ),
-
-                    const Divider(),
-
-                    // SMS Gateway Username
-                    ListTile(
-                      leading: const Icon(Icons.person),
-                      title: const Text('Username'),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
+                  // Warning when gateway mode is selected but not configured
+                  if (_smsMode == 'gateway' && !_gatewayConfigured)
+                    Container(
+                      margin: const EdgeInsets.only(top: 8),
+                      padding: const EdgeInsets.all(10),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.shade50,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: Colors.orange.shade300),
+                      ),
+                      child: Row(
                         children: [
-                          const Text('Enter your SMS gateway username'),
-                          const SizedBox(height: 8),
-                          TextFormField(
-                            controller: _smsGatewayUsernameController,
-                            decoration: const InputDecoration(
-                              hintText: 'Enter username',
-                              border: OutlineInputBorder(),
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
+                          Icon(
+                            Icons.warning_amber_rounded,
+                            color: Colors.orange.shade700,
+                            size: 20,
+                          ),
+                          const SizedBox(width: 8),
+                          const Expanded(
+                            child: Text(
+                              'Gateway SMS is selected but credentials are incomplete. '
+                              'Fill in Username, Password, and Sender ID below, then save.',
+                              style: TextStyle(fontSize: 12),
                             ),
                           ),
                         ],
                       ),
                     ),
 
-                    const Divider(),
+                  const SizedBox(height: 16),
+                  const Divider(),
 
-                    // SMS Gateway Password
-                    ListTile(
-                      leading: const Icon(Icons.lock),
-                      title: const Text('Password'),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Enter your SMS gateway password'),
-                          const SizedBox(height: 8),
-                          TextFormField(
-                            controller: _smsGatewayPasswordController,
-                            obscureText: true,
-                            decoration: const InputDecoration(
-                              hintText: 'Enter password',
-                              border: OutlineInputBorder(),
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
+                  // ── GATEWAY CONFIGURATION (shown always for editing) ──
+                  Text(
+                    'Gateway Credentials',
+                    style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      fontWeight: FontWeight.bold,
+                      color: Colors.grey.shade700,
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+
+                  // Gateway URL
+                  ListTile(
+                    leading: const Icon(Icons.link),
+                    title: const Text('Gateway URL'),
+                    subtitle: Text(
+                      _smsGatewayUrl,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: const Icon(Icons.edit, size: 16),
+                    onTap: () => _showSmsGatewayUrlDialog(context),
+                  ),
+                  const Divider(),
+
+                  // Username
+                  ListTile(
+                    leading: const Icon(Icons.person),
+                    title: const Text('Username'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('SMS gateway username'),
+                        const SizedBox(height: 6),
+                        TextFormField(
+                          controller: _smsGatewayUsernameController,
+                          onChanged: (_) => setState(() {}),
+                          decoration: const InputDecoration(
+                            hintText: 'Enter username',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
                             ),
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
+                  ),
+                  const Divider(),
 
-                    const Divider(),
-
-                    // SMS Gateway Sender ID
-                    ListTile(
-                      leading: const Icon(Icons.badge),
-                      title: const Text('Sender ID'),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text('Sender ID that appears on SMS messages'),
-                          const SizedBox(height: 8),
-                          TextFormField(
-                            controller: _smsGatewaySenderIdController,
-                            textCapitalization: TextCapitalization.characters,
-                            decoration: const InputDecoration(
-                              hintText: 'e.g., FARMPRO',
-                              border: OutlineInputBorder(),
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
-                            ),
-                            onChanged: (value) {
-                              // Auto-convert to uppercase as user types
-                              final upperValue = value.toUpperCase();
-                              if (upperValue != value) {
-                                _smsGatewaySenderIdController
-                                    .value = _smsGatewaySenderIdController.value
-                                    .copyWith(
-                                      text: upperValue,
-                                      selection: TextSelection.collapsed(
-                                        offset: upperValue.length,
-                                      ),
-                                    );
-                              }
-                            },
-                          ),
-                        ],
-                      ),
-                    ),
-
-                    const Divider(),
-
-                    // SMS Gateway API Key (Optional)
-                    ListTile(
-                      leading: const Icon(Icons.key),
-                      title: const Text('API Key (Optional)'),
-                      subtitle: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          const Text(
-                            'API key for additional authentication (if required)',
-                          ),
-                          const SizedBox(height: 8),
-                          TextFormField(
-                            controller: _smsGatewayApiKeyController,
-                            decoration: const InputDecoration(
-                              hintText: 'Enter API key (optional)',
-                              border: OutlineInputBorder(),
-                              contentPadding: EdgeInsets.symmetric(
-                                horizontal: 12,
-                                vertical: 8,
-                              ),
+                  // Password
+                  ListTile(
+                    leading: const Icon(Icons.lock),
+                    title: const Text('Password'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('SMS gateway password'),
+                        const SizedBox(height: 6),
+                        TextFormField(
+                          controller: _smsGatewayPasswordController,
+                          obscureText: true,
+                          onChanged: (_) => setState(() {}),
+                          decoration: const InputDecoration(
+                            hintText: 'Enter password',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
                             ),
                           ),
-                        ],
-                      ),
+                        ),
+                      ],
                     ),
+                  ),
+                  const Divider(),
 
-                    const Divider(),
-
-                    // SMS Gateway Fallback to SIM
-                    SwitchListTile(
-                      title: const Text('SIM Card Fallback'),
-                      subtitle: const Text('Use SIM card if gateway fails'),
-                      value: _smsGatewayFallbackToSim,
-                      onChanged: (value) {
-                        setState(() {
-                          _smsGatewayFallbackToSim = value;
-                        });
-                      },
-                      activeColor: Theme.of(context).colorScheme.primary,
+                  // Sender ID
+                  ListTile(
+                    leading: const Icon(Icons.badge),
+                    title: const Text('Sender ID'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Sender ID shown on SMS messages'),
+                        const SizedBox(height: 6),
+                        TextFormField(
+                          controller: _smsGatewaySenderIdController,
+                          textCapitalization: TextCapitalization.characters,
+                          onChanged: (_) => setState(() {}),
+                          decoration: const InputDecoration(
+                            hintText: 'e.g., FARMPRO',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
-                  ],
+                  ),
+                  const Divider(),
+
+                  // API Key (optional)
+                  ListTile(
+                    leading: const Icon(Icons.key),
+                    title: const Text('API Key (Optional)'),
+                    subtitle: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('Additional authentication key if required'),
+                        const SizedBox(height: 6),
+                        TextFormField(
+                          controller: _smsGatewayApiKeyController,
+                          decoration: const InputDecoration(
+                            hintText: 'Enter API key (optional)',
+                            border: OutlineInputBorder(),
+                            contentPadding: EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const Divider(),
+
+                  // SIM Fallback (only meaningful in gateway mode)
+                  SwitchListTile(
+                    title: const Text('SIM Card Fallback'),
+                    subtitle: const Text(
+                      'Fall back to SIM card if gateway fails (Gateway mode only)',
+                    ),
+                    value: _smsGatewayFallbackToSim,
+                    onChanged:
+                        _smsMode == 'gateway'
+                            ? (v) =>
+                                setState(() => _smsGatewayFallbackToSim = v)
+                            : null,
+                    activeColor: Theme.of(context).colorScheme.primary,
+                  ),
                 ],
               ),
             ),
             const SizedBox(height: 16.0),
 
-            // System Configuration
+            // ── SYSTEM CONFIGURATION ─────────────────────────────
             CustomCard(
               padding: const EdgeInsets.all(16.0),
               child: Column(
@@ -1161,8 +1097,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     style: Theme.of(context).textTheme.titleLarge,
                   ),
                   const SizedBox(height: 16.0),
-
-                  // Print Method
                   ListTile(
                     leading: const Icon(Icons.print),
                     title: const Text('Print Method'),
@@ -1174,10 +1108,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     trailing: const Icon(Icons.settings, size: 16),
                     onTap: () => _showPrintMethodDialog(context),
                   ),
-
                   const Divider(),
-
-                  // Receipt Copies for Inventory Sales
                   ListTile(
                     leading: const Icon(Icons.content_copy),
                     title: const Text('Inventory Receipt Copies'),
@@ -1189,10 +1120,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     trailing: const Icon(Icons.settings, size: 16),
                     onTap: () => _showReceiptCopiesDialog(context),
                   ),
-
                   const Divider(),
-
-                  // Refresh Default Printer (only show for standard print method)
                   if (_printMethod == 'standard') ...[
                     ListTile(
                       leading: const Icon(Icons.refresh),
@@ -1203,11 +1131,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                       trailing: const Icon(Icons.arrow_forward_ios, size: 16),
                       onTap: () => _refreshDefaultPrinter(context),
                     ),
-
                     const Divider(),
                   ],
-
-                  // Default Tare Weight
                   ListTile(
                     leading: const Icon(Icons.scale),
                     title: const Text('Default Tare Weight'),
@@ -1217,10 +1142,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     trailing: const Icon(Icons.edit, size: 16),
                     onTap: () => _showTareWeightDialog(context),
                   ),
-
                   const Divider(),
-
-                  // Coffee Product
                   ListTile(
                     leading: const Icon(Icons.local_cafe),
                     title: const Text('Coffee Product'),
@@ -1241,14 +1163,13 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                           ),
                           textCapitalization: TextCapitalization.characters,
                           onChanged: (value) {
-                            // Auto-convert to uppercase as user types
-                            final upperValue = value.toUpperCase();
-                            if (upperValue != value) {
+                            final upper = value.toUpperCase();
+                            if (upper != value) {
                               _coffeeProductController.value =
                                   _coffeeProductController.value.copyWith(
-                                    text: upperValue,
+                                    text: upper,
                                     selection: TextSelection.collapsed(
-                                      offset: upperValue.length,
+                                      offset: upper.length,
                                     ),
                                   );
                             }
@@ -1257,15 +1178,12 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                       ],
                     ),
                   ),
-
-                  const Divider(),
                 ],
               ),
             ),
-
             const SizedBox(height: 16.0),
 
-            // Bluetooth Devices
+            // ── BLUETOOTH DEVICES ────────────────────────────────
             CustomCard(
               padding: const EdgeInsets.all(16.0),
               child: Column(
@@ -1297,8 +1215,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     ],
                   ),
                   const SizedBox(height: 16.0),
-
-                  // Bluetooth Devices List
                   Obx(() {
                     final connectedDevices = _bluetoothService.connectedDevices;
                     final scannedDevices = _bluetoothService.devices;
@@ -1316,7 +1232,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                               child: Text('No Bluetooth devices found'),
                             ),
                           ),
-                          // Add manual pairing option for classic Bluetooth
                           Container(
                             padding: const EdgeInsets.all(16),
                             decoration: BoxDecoration(
@@ -1335,7 +1250,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                                 ),
                                 const SizedBox(height: 8),
                                 const Text(
-                                  'If your scale requires PIN pairing (like 1234), use manual pairing through Android Settings.',
+                                  'If your scale requires PIN pairing, use manual pairing through Android Settings.',
                                 ),
                                 const SizedBox(height: 12),
                                 Row(
@@ -1376,7 +1291,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                     return Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        // Paired Classic Devices Section
                         if (pairedClassicDevices.isNotEmpty) ...[
                           const Padding(
                             padding: EdgeInsets.symmetric(vertical: 8.0),
@@ -1389,74 +1303,53 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                               ),
                             ),
                           ),
-                          ListView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: pairedClassicDevices.length,
-                            itemBuilder: (context, index) {
-                              final device = pairedClassicDevices[index];
-                              final isScale =
-                                  _defaultScaleAddress == device['address'];
-
-                              return Card(
-                                margin: const EdgeInsets.symmetric(vertical: 4),
-                                child: ListTile(
-                                  leading: const Icon(
-                                    Icons.bluetooth,
-                                    color: Colors.blue,
-                                  ),
-                                  title: Text(
-                                    device['name'] ?? 'Unknown Device',
-                                  ),
-                                  subtitle: Column(
-                                    crossAxisAlignment:
-                                        CrossAxisAlignment.start,
-                                    children: [
-                                      Text('Address: ${device['address']}'),
-                                      Text(
-                                        'Status: ${device['pin']}',
-                                        style: const TextStyle(fontSize: 12),
-                                      ),
-                                    ],
-                                  ),
-                                  trailing: Row(
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                      if (isScale)
-                                        const Chip(
-                                          label: Text('Active Scale'),
-                                          backgroundColor: Colors.green,
-                                          labelStyle: TextStyle(
-                                            color: Colors.white,
-                                          ),
-                                        ),
-                                      const SizedBox(width: 8),
-                                      ElevatedButton(
-                                        onPressed:
-                                            () => _connectToClassicScale(
-                                              device['address']!,
-                                            ),
-                                        style: ElevatedButton.styleFrom(
-                                          backgroundColor:
-                                              isScale
-                                                  ? Colors.orange
-                                                  : Colors.blue,
-                                          foregroundColor: Colors.white,
-                                        ),
-                                        child: Text(
-                                          isScale ? 'Reconnect' : 'Connect',
-                                        ),
-                                      ),
-                                    ],
-                                  ),
+                          ...pairedClassicDevices.map((device) {
+                            final isScale =
+                                _defaultScaleAddress == device['address'];
+                            return Card(
+                              margin: const EdgeInsets.symmetric(vertical: 4),
+                              child: ListTile(
+                                leading: const Icon(
+                                  Icons.bluetooth,
+                                  color: Colors.blue,
                                 ),
-                              );
-                            },
-                          ),
+                                title: Text(device['name'] ?? 'Unknown Device'),
+                                subtitle: Text('Address: ${device['address']}'),
+                                trailing: Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    if (isScale)
+                                      const Chip(
+                                        label: Text('Active Scale'),
+                                        backgroundColor: Colors.green,
+                                        labelStyle: TextStyle(
+                                          color: Colors.white,
+                                        ),
+                                      ),
+                                    const SizedBox(width: 8),
+                                    ElevatedButton(
+                                      onPressed:
+                                          () => _connectToClassicScale(
+                                            device['address']!,
+                                          ),
+                                      style: ElevatedButton.styleFrom(
+                                        backgroundColor:
+                                            isScale
+                                                ? Colors.orange
+                                                : Colors.blue,
+                                        foregroundColor: Colors.white,
+                                      ),
+                                      child: Text(
+                                        isScale ? 'Reconnect' : 'Connect',
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          }),
                           const SizedBox(height: 8),
                         ],
-
-                        // Connected BLE Devices Section
                         if (connectedDevices.isNotEmpty) ...[
                           const Padding(
                             padding: EdgeInsets.symmetric(vertical: 8.0),
@@ -1468,57 +1361,32 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                               ),
                             ),
                           ),
-                          ListView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: connectedDevices.length,
-                            itemBuilder: (context, index) {
-                              final device = connectedDevices[index];
-                              final isPrinter =
-                                  _defaultPrinterAddress == device.address;
-                              final isScale =
-                                  _defaultScaleAddress == device.address;
-
-                              return ListTile(
-                                title: Text(
-                                  device.name?.isNotEmpty == true
-                                      ? device.name!
-                                      : 'Unknown Device',
-                                ),
-                                subtitle: Text(device.address),
-                                leading: Icon(
-                                  isScale
-                                      ? Icons.scale
-                                      : isPrinter
-                                      ? Icons.print
-                                      : Icons.bluetooth,
-                                  color:
-                                      (isPrinter || isScale)
-                                          ? Theme.of(
-                                            context,
-                                          ).colorScheme.primary
-                                          : null,
-                                ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    if (!isPrinter && !isScale) ...[
-                                      ElevatedButton(
-                                        onPressed: () {
-                                          _connectToPrinter(device.address);
-                                        },
-                                        child: const Text('Printer'),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      ElevatedButton(
-                                        onPressed: () {
-                                          _connectToScale(device.address);
-                                        },
-                                        child: const Text('Scale'),
-                                      ),
-                                    ],
-                                    if (isPrinter || isScale) ...[
-                                      Container(
+                          ...connectedDevices.map((device) {
+                            final isPrinter =
+                                _defaultPrinterAddress == device.address;
+                            final isScale =
+                                _defaultScaleAddress == device.address;
+                            return ListTile(
+                              title: Text(
+                                device.name?.isNotEmpty == true
+                                    ? device.name!
+                                    : 'Unknown Device',
+                              ),
+                              subtitle: Text(device.address),
+                              leading: Icon(
+                                isScale
+                                    ? Icons.scale
+                                    : isPrinter
+                                    ? Icons.print
+                                    : Icons.bluetooth,
+                                color:
+                                    (isPrinter || isScale)
+                                        ? Theme.of(context).colorScheme.primary
+                                        : null,
+                              ),
+                              trailing:
+                                  (isPrinter || isScale)
+                                      ? Container(
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: 8,
                                           vertical: 4,
@@ -1539,16 +1407,30 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                                             fontSize: 12,
                                           ),
                                         ),
+                                      )
+                                      : Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          ElevatedButton(
+                                            onPressed:
+                                                () => _connectToPrinter(
+                                                  device.address,
+                                                ),
+                                            child: const Text('Printer'),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          ElevatedButton(
+                                            onPressed:
+                                                () => _connectToScale(
+                                                  device.address,
+                                                ),
+                                            child: const Text('Scale'),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
+                            );
+                          }),
                         ],
-
-                        // Available BLE Devices Section
                         if (scannedDevices.isNotEmpty) ...[
                           const Padding(
                             padding: EdgeInsets.symmetric(vertical: 8.0),
@@ -1560,57 +1442,32 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                               ),
                             ),
                           ),
-                          ListView.builder(
-                            shrinkWrap: true,
-                            physics: const NeverScrollableScrollPhysics(),
-                            itemCount: scannedDevices.length,
-                            itemBuilder: (context, index) {
-                              final device = scannedDevices[index];
-                              final isPrinter =
-                                  _defaultPrinterAddress == device.address;
-                              final isScale =
-                                  _defaultScaleAddress == device.address;
-
-                              return ListTile(
-                                title: Text(
-                                  device.name?.isNotEmpty == true
-                                      ? device.name!
-                                      : 'Unknown Device',
-                                ),
-                                subtitle: Text(device.address),
-                                leading: Icon(
-                                  isScale
-                                      ? Icons.scale
-                                      : isPrinter
-                                      ? Icons.print
-                                      : Icons.bluetooth,
-                                  color:
-                                      (isPrinter || isScale)
-                                          ? Theme.of(
-                                            context,
-                                          ).colorScheme.primary
-                                          : null,
-                                ),
-                                trailing: Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    if (!isPrinter && !isScale) ...[
-                                      ElevatedButton(
-                                        onPressed: () {
-                                          _connectToPrinter(device.address);
-                                        },
-                                        child: const Text('Printer'),
-                                      ),
-                                      const SizedBox(width: 8),
-                                      ElevatedButton(
-                                        onPressed: () {
-                                          _connectToScale(device.address);
-                                        },
-                                        child: const Text('Scale'),
-                                      ),
-                                    ],
-                                    if (isPrinter || isScale) ...[
-                                      Container(
+                          ...scannedDevices.map((device) {
+                            final isPrinter =
+                                _defaultPrinterAddress == device.address;
+                            final isScale =
+                                _defaultScaleAddress == device.address;
+                            return ListTile(
+                              title: Text(
+                                device.name?.isNotEmpty == true
+                                    ? device.name!
+                                    : 'Unknown Device',
+                              ),
+                              subtitle: Text(device.address),
+                              leading: Icon(
+                                isScale
+                                    ? Icons.scale
+                                    : isPrinter
+                                    ? Icons.print
+                                    : Icons.bluetooth,
+                                color:
+                                    (isPrinter || isScale)
+                                        ? Theme.of(context).colorScheme.primary
+                                        : null,
+                              ),
+                              trailing:
+                                  (isPrinter || isScale)
+                                      ? Container(
                                         padding: const EdgeInsets.symmetric(
                                           horizontal: 8,
                                           vertical: 4,
@@ -1631,16 +1488,30 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                                             fontSize: 12,
                                           ),
                                         ),
+                                      )
+                                      : Row(
+                                        mainAxisSize: MainAxisSize.min,
+                                        children: [
+                                          ElevatedButton(
+                                            onPressed:
+                                                () => _connectToPrinter(
+                                                  device.address,
+                                                ),
+                                            child: const Text('Printer'),
+                                          ),
+                                          const SizedBox(width: 8),
+                                          ElevatedButton(
+                                            onPressed:
+                                                () => _connectToScale(
+                                                  device.address,
+                                                ),
+                                            child: const Text('Scale'),
+                                          ),
+                                        ],
                                       ),
-                                    ],
-                                  ],
-                                ),
-                              );
-                            },
-                          ),
+                            );
+                          }),
                         ],
-
-                        // Classic Bluetooth information section
                         const SizedBox(height: 16),
                         Container(
                           padding: const EdgeInsets.all(16),
@@ -1670,8 +1541,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                               ),
                               const SizedBox(height: 8),
                               const Text(
-                                'If your scale requires PIN pairing (like 1234 or 0000), it uses classic Bluetooth. '
-                                'These devices need to be paired manually through Android Settings, then added here.',
+                                'If your scale requires PIN pairing, it uses classic Bluetooth and must be paired through Android Settings first.',
                               ),
                               const SizedBox(height: 12),
                               Row(
@@ -1712,7 +1582,6 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                       ],
                     );
                   }),
-
                   const SizedBox(height: 8.0),
                   Center(
                     child: CustomButton(
@@ -1727,7 +1596,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
             ),
             const SizedBox(height: 24.0),
 
-            // Save Button
+            // ── SAVE BUTTON ────────────────────────────────────
             Obx(
               () => CustomButton(
                 text: 'Save Settings',

@@ -10,38 +10,39 @@ class SystemSettings {
   final String? defaultScaleAddress;
   final double coffeePrice;
   final String currency;
-  final double defaultTareWeight; // Default tare weight for coffee containers
-  final String printMethod; // 'bluetooth' or 'standard'
-  final String coffeeProduct; // 'CHERRY' or 'MBUNI'
-  final bool allowProductChange; // Can change product after collection starts
+  final double defaultTareWeight;
+  final String printMethod;
+  final String coffeeProduct;
+  final bool allowProductChange;
   final String? currentSeasonId;
   final bool enableInventory;
   final bool enableCreditSales;
-  final int receiptDuplicates; // Number of receipt copies to print
-  final bool
-  autoDisconnectScale; // Automatically disconnect scale when leaving screen
-  final String
-  deliveryRestrictionMode; // 'single' or 'multiple' - controls daily delivery limit per member
+  final int receiptDuplicates;
+  final bool autoDisconnectScale;
+  final String deliveryRestrictionMode;
+
+  // SMS Mode: 'sim' = SIM card direct, 'gateway' = SMS gateway/bulk
+  final String smsMode;
 
   // SMS Gateway Configuration
-  final bool smsGatewayEnabled; // Enable/disable SMS gateway usage
-  final String smsGatewayUrl; // SMS gateway API endpoint URL
-  final String smsGatewayUsername; // Gateway username/userid
-  final String smsGatewayPassword; // Gateway password
-  final String smsGatewaySenderId; // Sender ID for SMS messages
-  final String smsGatewayApiKey; // API key for authentication
-  final bool smsGatewayFallbackToSim; // Enable SIM fallback on gateway failure
+  final bool smsGatewayEnabled;
+  final String smsGatewayUrl;
+  final String smsGatewayUsername;
+  final String smsGatewayPassword;
+  final String smsGatewaySenderId;
+  final String smsGatewayApiKey;
+  final bool smsGatewayFallbackToSim;
 
   // Bulk SMS Settings
-  final bool enableBulkSms; // Enable/disable bulk SMS functionality
-  final String bulkSmsDefaultMessage; // Default message template for bulk SMS
-  final bool bulkSmsIncludeBalance; // Include member balance in bulk SMS
-  final bool bulkSmsIncludeName; // Include member name in bulk SMS
-  final int bulkSmsMaxRecipients; // Maximum recipients per bulk SMS batch
-  final int bulkSmsBatchDelay; // Delay between batches in seconds
-  final bool bulkSmsConfirmBeforeSend; // Require confirmation before sending
-  final String bulkSmsFilterType; // Filter type: 'all', 'credit', 'active'
-  final bool bulkSmsLogActivity; // Log bulk SMS activity
+  final bool enableBulkSms;
+  final String bulkSmsDefaultMessage;
+  final bool bulkSmsIncludeBalance;
+  final bool bulkSmsIncludeName;
+  final int bulkSmsMaxRecipients;
+  final int bulkSmsBatchDelay;
+  final bool bulkSmsConfirmBeforeSend;
+  final String bulkSmsFilterType;
+  final bool bulkSmsLogActivity;
 
   SystemSettings({
     required this.id,
@@ -55,41 +56,50 @@ class SystemSettings {
     this.defaultScaleAddress,
     this.coffeePrice = 80.0,
     this.currency = 'KES',
-    this.defaultTareWeight = 0.5, // Default to 0.5 kg
-    this.printMethod = 'bluetooth', // Default to bluetooth printing
-    this.coffeeProduct = 'CHERRY', // Default to cherry
+    this.defaultTareWeight = 0.5,
+    this.printMethod = 'bluetooth',
+    this.coffeeProduct = 'CHERRY',
     this.allowProductChange = true,
     this.currentSeasonId,
     this.enableInventory = true,
     this.enableCreditSales = true,
     this.receiptDuplicates = 1,
     this.autoDisconnectScale = false,
-    this.deliveryRestrictionMode =
-        'multiple', // Default to multiple deliveries per day
+    this.deliveryRestrictionMode = 'multiple',
+    // SMS mode defaults to 'sim' for backward compatibility
+    this.smsMode = 'sim',
     // SMS Gateway Configuration defaults
-    this.smsGatewayEnabled = true, // Default to enabled for new installations
-    this.smsGatewayUrl =
-        'https://portal.zettatel.com/SMSApi/send', // Default Zettatel URL
-    this.smsGatewayUsername = '', // Must be configured by user
-    this.smsGatewayPassword = '', // Must be configured by user
-    this.smsGatewaySenderId = 'FARMPRO', // Default sender ID
-    this.smsGatewayApiKey = '', // Must be configured by user
-    this.smsGatewayFallbackToSim = true, // Default to fallback enabled
+    this.smsGatewayEnabled = false,
+    this.smsGatewayUrl = 'https://portal.zettatel.com/SMSApi/send',
+    this.smsGatewayUsername = '',
+    this.smsGatewayPassword = '',
+    this.smsGatewaySenderId = 'FARMPRO',
+    this.smsGatewayApiKey = '',
+    this.smsGatewayFallbackToSim = true,
     // Bulk SMS Settings defaults
-    this.enableBulkSms = true, // Default to enabled
+    this.enableBulkSms = true,
     this.bulkSmsDefaultMessage =
-        'Dear {name}, your current balance is KSh {balance}. Thank you for your business.', // Default template
-    this.bulkSmsIncludeBalance = true, // Default to include balance
-    this.bulkSmsIncludeName = true, // Default to include name
-    this.bulkSmsMaxRecipients = 50, // Default batch size
-    this.bulkSmsBatchDelay = 2, // Default 2 seconds between batches
-    this.bulkSmsConfirmBeforeSend = true, // Default to require confirmation
-    this.bulkSmsFilterType = 'all', // Default to all members
-    this.bulkSmsLogActivity = true, // Default to log activity
+        'Dear {name}, your current balance is KSh {balance}. Thank you for your business.',
+    this.bulkSmsIncludeBalance = true,
+    this.bulkSmsIncludeName = true,
+    this.bulkSmsMaxRecipients = 50,
+    this.bulkSmsBatchDelay = 2,
+    this.bulkSmsConfirmBeforeSend = true,
+    this.bulkSmsFilterType = 'all',
+    this.bulkSmsLogActivity = true,
   });
 
+  /// True when the user has selected Gateway as the SMS mode
+  bool get isGatewayMode => smsMode == 'gateway';
+
+  /// True when the gateway is properly configured for use
+  bool get isGatewayConfigured =>
+      smsGatewayUrl.isNotEmpty &&
+      smsGatewayUsername.isNotEmpty &&
+      smsGatewayPassword.isNotEmpty &&
+      smsGatewaySenderId.isNotEmpty;
+
   factory SystemSettings.fromJson(Map<String, dynamic> json) {
-    // Helper function to convert int to bool safely
     bool intToBool(dynamic value) {
       if (value is bool) return value;
       if (value is int) return value == 1;
@@ -97,16 +107,14 @@ class SystemSettings {
         final lowerValue = value.toLowerCase();
         return lowerValue == 'true' || lowerValue == '1';
       }
-      return false; // Default value for any other type
+      return false;
     }
 
-    // Helper function to safely get string values
     String safeString(dynamic value, String defaultValue) {
       if (value is String) return value;
       return defaultValue;
     }
 
-    // Helper function to safely get numeric values
     double safeDouble(dynamic value, double defaultValue) {
       if (value is num) return value.toDouble();
       if (value is String) {
@@ -116,7 +124,6 @@ class SystemSettings {
       return defaultValue;
     }
 
-    // Helper function to safely get integer values
     int safeInt(dynamic value, int defaultValue) {
       if (value is int) return value;
       if (value is num) return value.toInt();
@@ -126,6 +133,14 @@ class SystemSettings {
       }
       return defaultValue;
     }
+
+    // Derive smsMode from stored value or from legacy smsGatewayEnabled
+    final rawSmsMode = safeString(json['smsMode'], '');
+    final legacyGatewayEnabled = intToBool(json['smsGatewayEnabled'] ?? false);
+    final resolvedSmsMode =
+        rawSmsMode.isNotEmpty
+            ? rawSmsMode
+            : (legacyGatewayEnabled ? 'gateway' : 'sim');
 
     return SystemSettings(
       id: safeString(json['id'], 'default'),
@@ -154,9 +169,8 @@ class SystemSettings {
         json['deliveryRestrictionMode'],
         'multiple',
       ),
-
-      // SMS Gateway Configuration
-      smsGatewayEnabled: intToBool(json['smsGatewayEnabled'] ?? true),
+      smsMode: resolvedSmsMode,
+      smsGatewayEnabled: resolvedSmsMode == 'gateway',
       smsGatewayUrl: safeString(
         json['smsGatewayUrl'],
         'https://portal.zettatel.com/SMSApi/send',
@@ -168,8 +182,6 @@ class SystemSettings {
       smsGatewayFallbackToSim: intToBool(
         json['smsGatewayFallbackToSim'] ?? true,
       ),
-
-      // Bulk SMS Settings
       enableBulkSms: intToBool(json['enableBulkSms'] ?? true),
       bulkSmsDefaultMessage: safeString(
         json['bulkSmsDefaultMessage'],
@@ -210,17 +222,14 @@ class SystemSettings {
       'receiptDuplicates': receiptDuplicates,
       'autoDisconnectScale': autoDisconnectScale,
       'deliveryRestrictionMode': deliveryRestrictionMode,
-
-      // SMS Gateway Configuration
-      'smsGatewayEnabled': smsGatewayEnabled,
+      'smsMode': smsMode,
+      'smsGatewayEnabled': isGatewayMode,
       'smsGatewayUrl': smsGatewayUrl,
       'smsGatewayUsername': smsGatewayUsername,
       'smsGatewayPassword': smsGatewayPassword,
       'smsGatewaySenderId': smsGatewaySenderId,
       'smsGatewayApiKey': smsGatewayApiKey,
       'smsGatewayFallbackToSim': smsGatewayFallbackToSim,
-
-      // Bulk SMS Settings
       'enableBulkSms': enableBulkSms,
       'bulkSmsDefaultMessage': bulkSmsDefaultMessage,
       'bulkSmsIncludeBalance': bulkSmsIncludeBalance,
@@ -233,7 +242,6 @@ class SystemSettings {
     };
   }
 
-  // Copy with method
   SystemSettings copyWith({
     String? id,
     bool? enablePrinting,
@@ -256,8 +264,7 @@ class SystemSettings {
     int? receiptDuplicates,
     bool? autoDisconnectScale,
     String? deliveryRestrictionMode,
-
-    // SMS Gateway Configuration parameters
+    String? smsMode,
     bool? smsGatewayEnabled,
     String? smsGatewayUrl,
     String? smsGatewayUsername,
@@ -265,8 +272,6 @@ class SystemSettings {
     String? smsGatewaySenderId,
     String? smsGatewayApiKey,
     bool? smsGatewayFallbackToSim,
-
-    // Bulk SMS Settings parameters
     bool? enableBulkSms,
     String? bulkSmsDefaultMessage,
     bool? bulkSmsIncludeBalance,
@@ -304,8 +309,7 @@ class SystemSettings {
       autoDisconnectScale: autoDisconnectScale ?? this.autoDisconnectScale,
       deliveryRestrictionMode:
           deliveryRestrictionMode ?? this.deliveryRestrictionMode,
-
-      // SMS Gateway Configuration
+      smsMode: smsMode ?? this.smsMode,
       smsGatewayEnabled: smsGatewayEnabled ?? this.smsGatewayEnabled,
       smsGatewayUrl: smsGatewayUrl ?? this.smsGatewayUrl,
       smsGatewayUsername: smsGatewayUsername ?? this.smsGatewayUsername,
@@ -314,8 +318,6 @@ class SystemSettings {
       smsGatewayApiKey: smsGatewayApiKey ?? this.smsGatewayApiKey,
       smsGatewayFallbackToSim:
           smsGatewayFallbackToSim ?? this.smsGatewayFallbackToSim,
-
-      // Bulk SMS Settings
       enableBulkSms: enableBulkSms ?? this.enableBulkSms,
       bulkSmsDefaultMessage:
           bulkSmsDefaultMessage ?? this.bulkSmsDefaultMessage,

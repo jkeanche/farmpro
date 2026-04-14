@@ -475,89 +475,31 @@ class PrintService extends GetxService {
     }
   }
 
-  // Generate PDF for receipt
   Future<Uint8List> _generateReceiptPdf(
     Map<String, dynamic> receiptData, {
     int copies = 1,
   }) async {
-    print('📄 _generateReceiptPdf called with copies=$copies');
     final pdf = pw.Document();
 
-    // Get current date and time with proper formatting
     final now = DateTime.now();
     final formattedDate = DateFormat('dd/MM/yyyy').format(now);
     final formattedTime = DateFormat('HH:mm').format(now);
 
-    // Load logo if available - improved debugging
     pw.MemoryImage? logoImage;
-    print('Logo path in receiptData: ${receiptData['logoPath']}');
-
     if (receiptData['logoPath'] != null &&
         receiptData['logoPath'].toString().isNotEmpty) {
       try {
-        final String logoPath = receiptData['logoPath'].toString();
-        print('Attempting to load logo from path: $logoPath');
-
-        // Verify the file exists
-        final File logoFile = File(logoPath);
-        final bool fileExists = await logoFile.exists();
-        print('Logo file exists: $fileExists');
-
-        if (fileExists) {
-          // Check file size
-          final int fileSize = await logoFile.length();
-          print('Logo file size: $fileSize bytes');
-
-          if (fileSize > 0) {
-            try {
-              final logoBytes = await logoFile.readAsBytes();
-              print(
-                'Successfully read ${logoBytes.length} bytes from logo file',
-              );
-
-              // Create image from bytes
-              logoImage = pw.MemoryImage(logoBytes);
-              print('Logo image created successfully for PDF');
-            } catch (readError) {
-              print('Error reading logo file bytes: $readError');
-            }
-          } else {
-            print('Logo file exists but is empty (0 bytes)');
-          }
-        } else {
-          print('Logo file does not exist at path: $logoPath');
-
-          // Try to list files in the directory to help debugging
-          try {
-            final directory = Directory(
-              logoPath.substring(0, logoPath.lastIndexOf('/')),
-            );
-            if (await directory.exists()) {
-              print('Contents of directory: ${directory.path}');
-              final List<FileSystemEntity> files =
-                  await directory.list().toList();
-              for (var file in files) {
-                print(' - ${file.path}');
-              }
-            } else {
-              print('Parent directory does not exist');
-            }
-          } catch (dirError) {
-            print('Error listing directory: $dirError');
-          }
+        final File logoFile = File(receiptData['logoPath'].toString());
+        if (await logoFile.exists()) {
+          final logoBytes = await logoFile.readAsBytes();
+          if (logoBytes.isNotEmpty) logoImage = pw.MemoryImage(logoBytes);
         }
       } catch (e) {
-        print('Error in logo loading process: $e');
+        print('Error loading logo: $e');
       }
-    } else {
-      print('No logo path provided in receipt data or path is empty');
     }
 
-    // Create PDF content with custom page format for optimal 80mm receipt width
-    // Generate the specified number of copies (pages)
-    print('📄 Starting PDF page generation loop: copies=$copies');
     for (int copyNumber = 0; copyNumber < copies; copyNumber++) {
-      print('📄 Adding page ${copyNumber + 1} of $copies');
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.roll80.copyWith(
@@ -570,88 +512,85 @@ class PrintService extends GetxService {
             return pw.Column(
               crossAxisAlignment: pw.CrossAxisAlignment.start,
               children: [
-                // Logo if available - Optimized for 80mm receipt width
+                // ── LOGO ──────────────────────────────────────
                 if (logoImage != null) ...[
                   pw.SizedBox(height: 4),
                   pw.Center(
                     child: pw.Container(
-                      height: 80,
+                      height: 90,
                       child: pw.Image(logoImage, fit: pw.BoxFit.contain),
                     ),
                   ),
                   pw.SizedBox(height: 6),
                 ],
 
-                // Header
+                // ── HEADER ────────────────────────────────────
                 pw.Center(
                   child: pw.Text(
                     receiptData['societyName'] ?? 'Farm Fresh',
                     style: pw.TextStyle(
-                      fontSize: 21,
+                      fontSize: 30,
                       fontWeight: pw.FontWeight.bold,
                     ),
                   ),
                 ),
-
-                // Factory name
                 if (receiptData['factory'] != null)
                   pw.Center(
                     child: pw.Text(
                       receiptData['factory'],
                       style: pw.TextStyle(
-                        fontSize: 16,
+                        fontSize: 24,
                         fontWeight: pw.FontWeight.bold,
                       ),
                     ),
                   ),
-
-                // Society address
                 if (receiptData['societyAddress'] != null)
                   pw.Center(
                     child: pw.Text(
                       receiptData['societyAddress'],
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: const pw.TextStyle(fontSize: 17),
                     ),
                   ),
 
                 pw.SizedBox(height: 6),
-
-                // Current date and time (when printed)
                 pw.Center(
                   child: pw.Text(
-                    'Printed on: $formattedDate at $formattedTime',
-                    style: const pw.TextStyle(fontSize: 11),
+                    'Printed: $formattedDate at $formattedTime',
+                    style: const pw.TextStyle(fontSize: 15),
                   ),
                 ),
-
                 pw.SizedBox(height: 10),
 
-                // Receipt number
+                // ── RECEIPT # ─────────────────────────────────
                 pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
                     pw.Text(
                       'Receipt #:',
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: const pw.TextStyle(fontSize: 18),
                     ),
                     pw.Text(
                       receiptData['receiptNumber'] ?? 'N/A',
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: pw.TextStyle(
+                        fontSize: 18,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
                     ),
                   ],
                 ),
-
-                // Divider
                 pw.Divider(),
 
-                // Member info
+                // ── MEMBER INFO ───────────────────────────────
                 pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
-                    pw.Text('Member:', style: const pw.TextStyle(fontSize: 13)),
+                    pw.Text('Member:', style: const pw.TextStyle(fontSize: 18)),
                     pw.Text(
                       receiptData['memberName'] ?? 'N/A',
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: pw.TextStyle(
+                        fontSize: 18,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
                     ),
                   ],
                 ),
@@ -660,153 +599,53 @@ class PrintService extends GetxService {
                   children: [
                     pw.Text(
                       'Member #:',
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: const pw.TextStyle(fontSize: 18),
                     ),
                     pw.Text(
                       receiptData['memberNumber'] ?? 'N/A',
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: const pw.TextStyle(fontSize: 18),
                     ),
                   ],
                 ),
-
-                // Collection/Delivery Date (the actual date when collection happened)
                 pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
                     pw.Text(
                       receiptData['type'] == 'coffee_collection'
                           ? 'Collection Date:'
-                          : 'Delivery Date:',
-                      style: const pw.TextStyle(fontSize: 13),
+                          : 'Date:',
+                      style: const pw.TextStyle(fontSize: 18),
                     ),
                     pw.Text(
                       receiptData['date'] ?? 'N/A',
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: const pw.TextStyle(fontSize: 18),
                     ),
                   ],
                 ),
-
-                // Served By - Always display this field prominently
                 pw.Row(
                   mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                   children: [
                     pw.Text(
                       'Served By:',
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: const pw.TextStyle(fontSize: 18),
                     ),
                     pw.Text(
                       receiptData['servedBy'] ?? 'N/A',
-                      style: const pw.TextStyle(fontSize: 13),
+                      style: pw.TextStyle(
+                        fontSize: 18,
+                        fontWeight: pw.FontWeight.bold,
+                      ),
                     ),
                   ],
                 ),
-
                 pw.SizedBox(height: 10),
 
-                // Coffee Collection Details (Coffee Type and Season)
+                // ── COFFEE COLLECTION DETAILS ─────────────────
                 if (receiptData['type'] == 'coffee_collection') ...[
-                  pw.Container(
-                    width: double.infinity,
-                    child: pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Text(
-                          'COFFEE COLLECTION DETAILS',
-                          style: pw.TextStyle(
-                            fontSize: 17,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                        pw.SizedBox(height: 5),
-                        pw.Table(
-                          border: null,
-                          columnWidths: const {
-                            0: pw.FlexColumnWidth(3),
-                            1: pw.FlexColumnWidth(2),
-                          },
-                          children: [
-                            pw.TableRow(
-                              children: [
-                                pw.Text(
-                                  'Coffee Type:',
-                                  style: pw.TextStyle(
-                                    fontSize: 17,
-                                    fontWeight: pw.FontWeight.bold,
-                                  ),
-                                ),
-                                pw.Container(
-                                  padding: const pw.EdgeInsets.symmetric(
-                                    horizontal: 4,
-                                    vertical: 2,
-                                  ),
-                                  decoration: pw.BoxDecoration(
-                                    color: PdfColors.grey200,
-                                    borderRadius: pw.BorderRadius.circular(3),
-                                  ),
-                                  child: pw.Text(
-                                    receiptData['productType'] ?? 'N/A',
-                                    style: pw.TextStyle(
-                                      fontSize: 17,
-                                      fontWeight: pw.FontWeight.bold,
-                                    ),
-                                    textAlign: pw.TextAlign.center,
-                                  ),
-                                ),
-                              ],
-                            ),
-                            pw.TableRow(
-                              children: [
-                                pw.Text(
-                                  'Season:',
-                                  style: pw.TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: pw.FontWeight.bold,
-                                  ),
-                                ),
-                                pw.Text(
-                                  receiptData['seasonName'] ?? 'N/A',
-                                  style: pw.TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: pw.FontWeight.bold,
-                                  ),
-                                  textAlign: pw.TextAlign.right,
-                                ),
-                              ],
-                            ),
-                            pw.TableRow(
-                              children: [
-                                pw.Text(
-                                  'Number of Bags:',
-                                  style: pw.TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: pw.FontWeight.bold,
-                                  ),
-                                ),
-                                pw.Text(
-                                  receiptData['numberOfBags'] ?? 'N/A',
-                                  style: pw.TextStyle(
-                                    fontSize: 16,
-                                    fontWeight: pw.FontWeight.bold,
-                                  ),
-                                  textAlign: pw.TextAlign.right,
-                                ),
-                              ],
-                            ),
-                          ],
-                        ),
-                      ],
-                    ),
-                  ),
-                  pw.SizedBox(height: 10),
-                ],
-
-                // Details section: show sales items for 'sale' receipts, otherwise weight details
-                if (receiptData['type'] == 'sale') ...[
-                  //==================== ITEMS TABLE ====================
                   pw.Text(
-                    'ITEMS',
+                    'COFFEE COLLECTION DETAILS',
                     style: pw.TextStyle(
-                      fontSize: 17,
+                      fontSize: 22,
                       fontWeight: pw.FontWeight.bold,
                     ),
                   ),
@@ -814,26 +653,114 @@ class PrintService extends GetxService {
                   pw.Table(
                     border: null,
                     columnWidths: const {
-                      0: pw.FlexColumnWidth(4), // Item name
-                      1: pw.FlexColumnWidth(2), // Qty
-                      2: pw.FlexColumnWidth(2), // Price
-                      3: pw.FlexColumnWidth(2), // Total
+                      0: pw.FlexColumnWidth(3),
+                      1: pw.FlexColumnWidth(2),
                     },
                     children: [
-                      // Header row
+                      pw.TableRow(
+                        children: [
+                          pw.Text(
+                            'Coffee Type:',
+                            style: pw.TextStyle(
+                              fontSize: 20,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                          ),
+                          pw.Container(
+                            padding: const pw.EdgeInsets.symmetric(
+                              horizontal: 4,
+                              vertical: 2,
+                            ),
+                            decoration: pw.BoxDecoration(
+                              color: PdfColors.grey200,
+                              borderRadius: pw.BorderRadius.circular(3),
+                            ),
+                            child: pw.Text(
+                              receiptData['productType'] ?? 'N/A',
+                              style: pw.TextStyle(
+                                fontSize: 20,
+                                fontWeight: pw.FontWeight.bold,
+                              ),
+                              textAlign: pw.TextAlign.center,
+                            ),
+                          ),
+                        ],
+                      ),
+                      pw.TableRow(
+                        children: [
+                          pw.Text(
+                            'Season:',
+                            style: pw.TextStyle(
+                              fontSize: 18,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                          ),
+                          pw.Text(
+                            receiptData['seasonName'] ?? 'N/A',
+                            style: pw.TextStyle(
+                              fontSize: 18,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                            textAlign: pw.TextAlign.right,
+                          ),
+                        ],
+                      ),
+                      pw.TableRow(
+                        children: [
+                          pw.Text(
+                            'Number of Bags:',
+                            style: pw.TextStyle(
+                              fontSize: 18,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                          ),
+                          pw.Text(
+                            receiptData['numberOfBags'] ?? 'N/A',
+                            style: pw.TextStyle(
+                              fontSize: 18,
+                              fontWeight: pw.FontWeight.bold,
+                            ),
+                            textAlign: pw.TextAlign.right,
+                          ),
+                        ],
+                      ),
+                    ],
+                  ),
+                  pw.SizedBox(height: 10),
+                ],
+
+                // ── SALE ITEMS ────────────────────────────────
+                if (receiptData['type'] == 'sale') ...[
+                  pw.Text(
+                    'ITEMS',
+                    style: pw.TextStyle(
+                      fontSize: 22,
+                      fontWeight: pw.FontWeight.bold,
+                    ),
+                  ),
+                  pw.SizedBox(height: 5),
+                  pw.Table(
+                    border: null,
+                    columnWidths: const {
+                      0: pw.FlexColumnWidth(4),
+                      1: pw.FlexColumnWidth(2),
+                      2: pw.FlexColumnWidth(2),
+                      3: pw.FlexColumnWidth(2),
+                    },
+                    children: [
                       pw.TableRow(
                         children: [
                           pw.Text(
                             'Item',
                             style: pw.TextStyle(
-                              fontSize: 15,
+                              fontSize: 19,
                               fontWeight: pw.FontWeight.bold,
                             ),
                           ),
                           pw.Text(
                             'Qty',
                             style: pw.TextStyle(
-                              fontSize: 15,
+                              fontSize: 19,
                               fontWeight: pw.FontWeight.bold,
                             ),
                             textAlign: pw.TextAlign.right,
@@ -841,7 +768,7 @@ class PrintService extends GetxService {
                           pw.Text(
                             'Price',
                             style: pw.TextStyle(
-                              fontSize: 15,
+                              fontSize: 19,
                               fontWeight: pw.FontWeight.bold,
                             ),
                             textAlign: pw.TextAlign.right,
@@ -849,14 +776,13 @@ class PrintService extends GetxService {
                           pw.Text(
                             'Total',
                             style: pw.TextStyle(
-                              fontSize: 15,
+                              fontSize: 19,
                               fontWeight: pw.FontWeight.bold,
                             ),
                             textAlign: pw.TextAlign.right,
                           ),
                         ],
                       ),
-                      // Data rows
                       ...((receiptData['items'] as List).map<pw.TableRow>((
                         item,
                       ) {
@@ -864,21 +790,21 @@ class PrintService extends GetxService {
                           children: [
                             pw.Text(
                               item['productName'],
-                              style: const pw.TextStyle(fontSize: 14),
+                              style: const pw.TextStyle(fontSize: 17),
                             ),
                             pw.Text(
                               item['quantity'],
-                              style: const pw.TextStyle(fontSize: 14),
+                              style: const pw.TextStyle(fontSize: 17),
                               textAlign: pw.TextAlign.right,
                             ),
                             pw.Text(
                               item['unitPrice'],
-                              style: const pw.TextStyle(fontSize: 14),
+                              style: const pw.TextStyle(fontSize: 17),
                               textAlign: pw.TextAlign.right,
                             ),
                             pw.Text(
                               item['totalPrice'],
-                              style: const pw.TextStyle(fontSize: 14),
+                              style: const pw.TextStyle(fontSize: 17),
                               textAlign: pw.TextAlign.right,
                             ),
                           ],
@@ -888,21 +814,20 @@ class PrintService extends GetxService {
                   ),
                   pw.SizedBox(height: 5),
                   pw.Divider(thickness: 0.5),
-                  //==================== TOTALS ====================
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
                       pw.Text(
                         'Subtotal:',
                         style: pw.TextStyle(
-                          fontSize: 16,
+                          fontSize: 21,
                           fontWeight: pw.FontWeight.bold,
                         ),
                       ),
                       pw.Text(
                         receiptData['totalAmount'] ?? '0.00',
                         style: pw.TextStyle(
-                          fontSize: 16,
+                          fontSize: 21,
                           fontWeight: pw.FontWeight.bold,
                         ),
                       ),
@@ -911,10 +836,10 @@ class PrintService extends GetxService {
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
                     children: [
-                      pw.Text('Paid:', style: const pw.TextStyle(fontSize: 13)),
+                      pw.Text('Paid:', style: const pw.TextStyle(fontSize: 18)),
                       pw.Text(
                         receiptData['paidAmount'] ?? '0.00',
-                        style: const pw.TextStyle(fontSize: 13),
+                        style: const pw.TextStyle(fontSize: 18),
                       ),
                     ],
                   ),
@@ -927,11 +852,11 @@ class PrintService extends GetxService {
                       children: [
                         pw.Text(
                           'This Sale Balance:',
-                          style: const pw.TextStyle(fontSize: 13),
+                          style: const pw.TextStyle(fontSize: 18),
                         ),
                         pw.Text(
                           receiptData['balanceAmount'] ?? '0.00',
-                          style: const pw.TextStyle(fontSize: 13),
+                          style: const pw.TextStyle(fontSize: 18),
                         ),
                       ],
                     ),
@@ -941,14 +866,14 @@ class PrintService extends GetxService {
                         pw.Text(
                           'Total Balance:',
                           style: pw.TextStyle(
-                            fontSize: 16,
+                            fontSize: 21,
                             fontWeight: pw.FontWeight.bold,
                           ),
                         ),
                         pw.Text(
                           'KSh ${receiptData['totalBalance'] ?? '0.00'}',
                           style: pw.TextStyle(
-                            fontSize: 16,
+                            fontSize: 21,
                             fontWeight: pw.FontWeight.bold,
                           ),
                         ),
@@ -960,127 +885,118 @@ class PrintService extends GetxService {
                     children: [
                       pw.Text(
                         'Sale Mode:',
-                        style: const pw.TextStyle(fontSize: 13),
+                        style: const pw.TextStyle(fontSize: 18),
                       ),
                       pw.Text(
                         receiptData['saleType'] ?? 'N/A',
-                        style: const pw.TextStyle(fontSize: 13),
+                        style: const pw.TextStyle(fontSize: 18),
                       ),
                     ],
                   ),
                 ] else ...[
-                  //==================== EXISTING WEIGHT DETAILS ====================
-                  pw.Container(
-                    width: double.infinity,
-                    child: pw.Column(
-                      crossAxisAlignment: pw.CrossAxisAlignment.start,
-                      children: [
-                        pw.Text(
-                          'WEIGHT DETAILS',
-                          style: pw.TextStyle(
-                            fontSize: 17,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                        pw.SizedBox(height: 5),
-                        pw.Table(
-                          border: null,
-                          columnWidths: const {
-                            0: pw.FlexColumnWidth(3),
-                            1: pw.FlexColumnWidth(2),
-                          },
+                  // ── WEIGHT DETAILS ─────────────────────────────
+                  pw.Text(
+                    'WEIGHT DETAILS',
+                    style: pw.TextStyle(
+                      fontSize: 22,
+                      fontWeight: pw.FontWeight.bold,
+                    ),
+                  ),
+                  pw.SizedBox(height: 5),
+                  pw.Table(
+                    border: null,
+                    columnWidths: const {
+                      0: pw.FlexColumnWidth(3),
+                      1: pw.FlexColumnWidth(2),
+                    },
+                    children: [
+                      if (receiptData['grossWeight'] != null &&
+                          receiptData['totalTareWeight'] != null) ...[
+                        pw.TableRow(
                           children: [
-                            if (receiptData['grossWeight'] != null &&
-                                receiptData['totalTareWeight'] != null) ...[
-                              pw.TableRow(
-                                children: [
-                                  pw.Text(
-                                    'Gross Weight:',
-                                    style: const pw.TextStyle(fontSize: 13),
-                                  ),
-                                  pw.Text(
-                                    '${receiptData['grossWeight']} kg',
-                                    style: const pw.TextStyle(fontSize: 13),
-                                    textAlign: pw.TextAlign.right,
-                                  ),
-                                ],
+                            pw.Text(
+                              'Gross Weight:',
+                              style: const pw.TextStyle(fontSize: 18),
+                            ),
+                            pw.Text(
+                              '${receiptData['grossWeight']} kg',
+                              style: const pw.TextStyle(fontSize: 18),
+                              textAlign: pw.TextAlign.right,
+                            ),
+                          ],
+                        ),
+                        if (receiptData['tareWeightPerBag'] != null)
+                          pw.TableRow(
+                            children: [
+                              pw.Text(
+                                'Tare / Bag:',
+                                style: const pw.TextStyle(fontSize: 18),
                               ),
-                              if (receiptData['tareWeightPerBag'] != null) ...[
-                                pw.TableRow(
-                                  children: [
-                                    pw.Text(
-                                      'Tare Weight per Bag:',
-                                      style: const pw.TextStyle(fontSize: 14),
-                                    ),
-                                    pw.Text(
-                                      '${receiptData['tareWeightPerBag']} kg',
-                                      style: const pw.TextStyle(fontSize: 14),
-                                      textAlign: pw.TextAlign.right,
-                                    ),
-                                  ],
-                                ),
-                              ],
-                              pw.TableRow(
-                                children: [
-                                  pw.Text(
-                                    'Total Tare Weight:',
-                                    style: const pw.TextStyle(fontSize: 13),
-                                  ),
-                                  pw.Text(
-                                    '${receiptData['totalTareWeight']} kg',
-                                    style: const pw.TextStyle(fontSize: 13),
-                                    textAlign: pw.TextAlign.right,
-                                  ),
-                                ],
-                              ),
-                              pw.TableRow(
-                                children: [
-                                  pw.Text(
-                                    'Net Weight:',
-                                    style: pw.TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: pw.FontWeight.bold,
-                                    ),
-                                  ),
-                                  pw.Text(
-                                    '${receiptData['netWeight']} kg',
-                                    style: pw.TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: pw.FontWeight.bold,
-                                    ),
-                                    textAlign: pw.TextAlign.right,
-                                  ),
-                                ],
-                              ),
-                            ] else ...[
-                              pw.TableRow(
-                                children: [
-                                  pw.Text(
-                                    'Weight:',
-                                    style: pw.TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: pw.FontWeight.bold,
-                                    ),
-                                  ),
-                                  pw.Text(
-                                    '${receiptData['weight'] ?? 'N/A'} kg',
-                                    style: pw.TextStyle(
-                                      fontSize: 16,
-                                      fontWeight: pw.FontWeight.bold,
-                                    ),
-                                    textAlign: pw.TextAlign.right,
-                                  ),
-                                ],
+                              pw.Text(
+                                '${receiptData['tareWeightPerBag']} kg',
+                                style: const pw.TextStyle(fontSize: 18),
+                                textAlign: pw.TextAlign.right,
                               ),
                             ],
+                          ),
+                        pw.TableRow(
+                          children: [
+                            pw.Text(
+                              'Total Tare:',
+                              style: const pw.TextStyle(fontSize: 18),
+                            ),
+                            pw.Text(
+                              '${receiptData['totalTareWeight']} kg',
+                              style: const pw.TextStyle(fontSize: 18),
+                              textAlign: pw.TextAlign.right,
+                            ),
+                          ],
+                        ),
+                        pw.TableRow(
+                          children: [
+                            pw.Text(
+                              'Net Weight:',
+                              style: pw.TextStyle(
+                                fontSize: 21,
+                                fontWeight: pw.FontWeight.bold,
+                              ),
+                            ),
+                            pw.Text(
+                              '${receiptData['netWeight']} kg',
+                              style: pw.TextStyle(
+                                fontSize: 21,
+                                fontWeight: pw.FontWeight.bold,
+                              ),
+                              textAlign: pw.TextAlign.right,
+                            ),
+                          ],
+                        ),
+                      ] else ...[
+                        pw.TableRow(
+                          children: [
+                            pw.Text(
+                              'Weight:',
+                              style: pw.TextStyle(
+                                fontSize: 21,
+                                fontWeight: pw.FontWeight.bold,
+                              ),
+                            ),
+                            pw.Text(
+                              '${receiptData['weight'] ?? 'N/A'} kg',
+                              style: pw.TextStyle(
+                                fontSize: 21,
+                                fontWeight: pw.FontWeight.bold,
+                              ),
+                              textAlign: pw.TextAlign.right,
+                            ),
                           ],
                         ),
                       ],
-                    ),
+                    ],
                   ),
                 ],
 
-                // Current season cumulative weight for coffee collections
+                // ── SEASON TOTAL ───────────────────────────────
                 if (receiptData['type'] == 'coffee_collection' &&
                     receiptData['allTimeCumulativeWeight'] != null) ...[
                   pw.Divider(thickness: 0.5),
@@ -1095,14 +1011,14 @@ class PrintService extends GetxService {
                         pw.Text(
                           'Season Total:',
                           style: pw.TextStyle(
-                            fontSize: 17,
+                            fontSize: 22,
                             fontWeight: pw.FontWeight.bold,
                           ),
                         ),
                         pw.Text(
                           '${receiptData['allTimeCumulativeWeight']} kg',
                           style: pw.TextStyle(
-                            fontSize: 17,
+                            fontSize: 22,
                             fontWeight: pw.FontWeight.bold,
                           ),
                         ),
@@ -1111,7 +1027,6 @@ class PrintService extends GetxService {
                   ),
                   pw.SizedBox(height: 5),
                 ] else if (receiptData['cumulativeWeight'] != null) ...[
-                  // Monthly cumulative weight for coffee/generic deliveries
                   pw.Divider(thickness: 0.5),
                   pw.Row(
                     mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
@@ -1119,14 +1034,14 @@ class PrintService extends GetxService {
                       pw.Text(
                         'Month-to-date Total:',
                         style: pw.TextStyle(
-                          fontSize: 16,
+                          fontSize: 20,
                           fontWeight: pw.FontWeight.bold,
                         ),
                       ),
                       pw.Text(
                         '${receiptData['cumulativeWeight']} kg',
                         style: pw.TextStyle(
-                          fontSize: 16,
+                          fontSize: 20,
                           fontWeight: pw.FontWeight.bold,
                         ),
                       ),
@@ -1135,72 +1050,43 @@ class PrintService extends GetxService {
                   pw.SizedBox(height: 5),
                 ],
 
-                // Divider
                 pw.Divider(),
 
-                // Recipient information for inventory/non-collection receipts
+                // ── SIGNATURE SECTION (non-collection) ──────────
                 if (receiptData['type'] != 'coffee_collection') ...[
                   pw.SizedBox(height: 10),
                   pw.Text(
                     'RECEIVED BY',
                     style: pw.TextStyle(
-                      fontSize: 9,
+                      fontSize: 15,
                       fontWeight: pw.FontWeight.bold,
                     ),
                   ),
                   pw.SizedBox(height: 8),
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Expanded(
-                        flex: 2,
-                        child: pw.Column(
-                          crossAxisAlignment: pw.CrossAxisAlignment.start,
-                          children: [
-                            pw.Text(
-                              'ID No: _____________________',
-                              style: const pw.TextStyle(fontSize: 9),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
+                  pw.Text(
+                    'ID No: _____________________',
+                    style: const pw.TextStyle(fontSize: 14),
                   ),
                   pw.SizedBox(height: 8),
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Expanded(
-                        flex: 2,
-                        child: pw.Column(
-                          crossAxisAlignment: pw.CrossAxisAlignment.start,
-                          children: [
-                            pw.Text(
-                              'Sign: _____________________',
-                              style: const pw.TextStyle(fontSize: 9),
-                            ),
-                          ],
-                        ),
-                      ),
-                    ],
+                  pw.Text(
+                    'Sign: ______________________',
+                    style: const pw.TextStyle(fontSize: 14),
                   ),
                   pw.SizedBox(height: 10),
                   pw.Divider(thickness: 0.5),
                 ],
 
-                // Footer
+                // ── FOOTER ────────────────────────────────────────
                 pw.Center(
                   child: pw.Text(
                     receiptData['slogan'] ?? 'Thank you!',
-                    style: const pw.TextStyle(fontSize: 10),
+                    style: const pw.TextStyle(fontSize: 14),
                   ),
                 ),
-
-                // Company info
                 pw.Center(
                   child: pw.Text(
                     'A product of Inuka Technologies',
-                    style: const pw.TextStyle(fontSize: 8),
+                    style: const pw.TextStyle(fontSize: 12),
                   ),
                 ),
               ],
