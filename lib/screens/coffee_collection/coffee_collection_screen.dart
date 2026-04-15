@@ -66,6 +66,14 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
   Timer? _memberSearchDebounce;
   final bool _isMemberSearching = false;
 
+  // ── Role helpers ──────────────────────────────────────────────────────────
+  /// True when the logged-in user is a clerk – enforces Bluetooth-only mode.
+  bool get _isClerk =>
+      _authController.currentUser.value?.role == UserRole.clerk;
+
+  /// Clerks are NOT allowed to switch to manual mode.
+  bool get _allowManualMode => !_isClerk;
+
   @override
   void initState() {
     super.initState();
@@ -75,7 +83,7 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
     final defaultTareWeight =
         _settingsController.systemSettings.value?.defaultTareWeight ?? 0.5;
     _tareWeightController.text = defaultTareWeight.toStringAsFixed(2);
-    _numberOfBagsController.text = '1'; // Default to 1 bag
+    _numberOfBagsController.text = '1';
 
     _grossWeightController.addListener(_calculateNetWeight);
     _tareWeightController.addListener(_calculateTotalTareWeight);
@@ -95,19 +103,13 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
     });
 
     _setupScaleWorkers();
-
-    // Ensure members are loaded and refreshed when entering this screen
     _refreshMembersData();
 
-    // Listen for member data changes to keep search updated
     ever(_memberController.isLoading, (bool loading) {
       if (!loading && mounted) {
-        // Refresh member search when member data is reloaded
         print('Members data refreshed - updating search cache');
-        _memberController.searchMembers(''); // Clear search cache
-        setState(() {
-          // Trigger UI update for member search
-        });
+        _memberController.searchMembers('');
+        setState(() {});
       }
     });
   }
@@ -124,14 +126,11 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
     _gapConnectionWorker?.dispose();
     _classicBluetoothWorker?.dispose();
     _backgroundWeightTimer?.cancel();
-    _memberSearchDebounce?.cancel(); // Cancel search debounce
+    _memberSearchDebounce?.cancel();
 
-    // Clean up stream subscriptions
     _bluetoothWeightSubscription?.cancel();
     _gapWeightSubscription?.cancel();
 
-    // Clean up Bluetooth connections when screen is disposed
-    // This is a backup cleanup in case the user navigates away without manual disconnect
     _cleanupBluetoothOnDispose();
 
     super.dispose();
@@ -139,29 +138,19 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
 
   Future<void> _cleanupBluetoothOnDispose() async {
     try {
-      print(
-        'Coffee Collection Screen disposing - cleaning up Bluetooth streams',
-      );
-
-      // Clean up any continuous monitoring streams
+      print('Coffee Collection Screen disposing - cleaning up Bluetooth streams');
       _bluetoothService.stopContinuousWeightStream();
 
-      // Check if auto-disconnect is enabled in settings
       final settings = _settingsController.systemSettings.value;
       if (settings?.autoDisconnectScale == true) {
         print('Auto-disconnect enabled - disconnecting from scale');
-
-        // Disconnect from both services
         await Future.wait([
           _bluetoothService.disconnectScale(),
           _gapScaleService.disconnect(),
         ]);
-
         print('Scale disconnected automatically on screen exit');
       } else {
-        print(
-          'Auto-disconnect disabled - keeping scale connection for other screens',
-        );
+        print('Auto-disconnect disabled - keeping scale connection for other screens');
       }
     } catch (e) {
       print('Error during Bluetooth cleanup on dispose: $e');
@@ -173,15 +162,29 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
     if (settings != null) {
       _updateCollectionModeAvailability(settings);
     }
+
+    // ── Clerk enforcement: always start in Auto mode ──────────────────────
+    if (_isClerk) {
+      _collectionMode = 'auto';
+      _isManualEntry = false;
+    }
   }
 
   void _updateCollectionModeAvailability(settings) {
     setState(() {
       _isAutoModeAvailable = settings.enableBluetoothScale;
 
-      if (!_isAutoModeAvailable && _collectionMode == 'auto') {
+      // If auto mode is unavailable AND user is NOT a clerk, fall back to manual.
+      // Clerks stay in auto regardless (scale may not be connected yet).
+      if (!_isAutoModeAvailable && _collectionMode == 'auto' && _allowManualMode) {
         _collectionMode = 'manual';
         _isManualEntry = true;
+      }
+
+      // Clerks can never be in manual mode.
+      if (_isClerk) {
+        _collectionMode = 'auto';
+        _isManualEntry = false;
       }
     });
   }
@@ -193,7 +196,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         _updateCollectionModeFromConnection();
       });
 
-      // Start/stop GAP weight monitoring based on connection
       if (connected) {
         _startGapWeightMonitoring();
       } else {
@@ -210,7 +212,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         _updateCollectionModeFromConnection();
       });
 
-      // Start/stop classic Bluetooth weight monitoring based on connection
       if (connected) {
         _startBluetoothWeightMonitoring();
       } else {
@@ -220,13 +221,8 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
   }
 
   void _startGapWeightMonitoring() {
-    // Stop existing subscription first
     _gapWeightSubscription?.cancel();
-
-    // Listen to GAP scale weight changes
-    _gapWeightSubscription = _gapScaleService.currentWeight.listen((
-      double weight,
-    ) {
+    _gapWeightSubscription = _gapScaleService.currentWeight.listen((double weight) {
       if (_gapScaleService.isConnected.value &&
           (_collectionMode == 'auto' || _isWeightMonitorActive)) {
         setState(() {
@@ -242,7 +238,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
   }
 
   void _startBluetoothWeightMonitoring() {
-    // Stop existing subscription first
     _bluetoothWeightSubscription?.cancel();
 
     if (!_bluetoothService.isScaleConnected.value) {
@@ -251,7 +246,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
     }
 
     try {
-      // Get continuous weight stream from Bluetooth service
       final weightStream = _bluetoothService.getContinuousWeightStream();
 
       _bluetoothWeightSubscription = weightStream.listen(
@@ -265,7 +259,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         },
         onError: (error) {
           print('Error in Bluetooth weight stream: $error');
-          // Don't show error to user for stream issues as they are not critical
         },
         onDone: () {
           print('Bluetooth weight stream completed');
@@ -276,9 +269,7 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       print('Started Bluetooth weight monitoring');
     } catch (e) {
       print('Error starting Bluetooth weight monitoring: $e');
-      // Fallback: show error only if it's critical
       if (e.toString().contains('Stream has already been listened to')) {
-        // Try to stop and restart the stream
         _bluetoothService.stopContinuousWeightStream();
         Future.delayed(Duration(milliseconds: 500), () {
           _startBluetoothWeightMonitoring();
@@ -290,18 +281,20 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
   void _stopBluetoothWeightMonitoring() {
     _bluetoothWeightSubscription?.cancel();
     _bluetoothWeightSubscription = null;
-
-    // Stop the continuous stream in the service
     _bluetoothService.stopContinuousWeightStream();
   }
 
   void _updateCollectionModeFromConnection() {
-    if (!_isBluetoothScaleConnected && _collectionMode == 'auto') {
+    // Only fall back to manual if the user is allowed manual mode
+    if (!_isBluetoothScaleConnected &&
+        _collectionMode == 'auto' &&
+        _allowManualMode) {
       setState(() {
         _collectionMode = 'manual';
         _isManualEntry = true;
       });
     }
+    // Clerks stay in auto even when scale is disconnected (they'll reconnect)
   }
 
   void _calculateTotalTareWeight() {
@@ -310,7 +303,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       try {
         final tarePerBag = double.parse(_tareWeightController.text);
         final numberOfBags = int.parse(_numberOfBagsController.text);
-        // The tare weight field shows per-bag weight, total calculation happens in net weight
         _calculateNetWeight();
       } catch (e) {
         _calculateNetWeight();
@@ -351,12 +343,11 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       if (_gapScaleService.isConnected.value) {
         weight = _gapScaleService.currentWeight.value;
       } else if (_bluetoothService.isScaleConnected.value) {
-        // For classic Bluetooth, use a single weight read instead of continuous stream
         weight = await _bluetoothService.readWeightFromScale();
       }
 
       if (weight != null && weight >= 0) {
-        final nonNullWeight = weight; // Capture non-null weight
+        final nonNullWeight = weight;
         setState(() {
           _grossWeightController.text = nonNullWeight.toStringAsFixed(2);
         });
@@ -387,6 +378,9 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
   }
 
   Future<void> _switchToManualMode() async {
+    // Clerks cannot switch to manual mode
+    if (!_allowManualMode) return;
+
     setState(() {
       _collectionMode = 'manual';
       _isManualEntry = true;
@@ -394,11 +388,9 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       _isWeightMonitorActive = false;
     });
 
-    // Stop real-time monitoring when switching to manual mode
     _stopBluetoothWeightMonitoring();
     _stopGapWeightMonitoring();
 
-    // Disconnect from scale when switching to manual mode
     bool wasConnected = false;
     try {
       if (_gapScaleService.isConnected.value) {
@@ -408,15 +400,12 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       } else if (_bluetoothService.isScaleConnected.value) {
         wasConnected = true;
         await _bluetoothService.disconnectScale();
-        print(
-          'Disconnected from Bluetooth scale when switching to manual mode',
-        );
+        print('Disconnected from Bluetooth scale when switching to manual mode');
       }
     } catch (e) {
       print('Error disconnecting from scale: $e');
     }
 
-    // Reset tare weight to default when switching modes
     _resetTareWeightToDefault();
 
     Get.snackbar(
@@ -438,14 +427,12 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       _isWeightMonitorActive = true;
     });
 
-    // Start real-time monitoring when switching to auto mode
     if (_gapScaleService.isConnected.value) {
       _startGapWeightMonitoring();
     } else if (_bluetoothService.isScaleConnected.value) {
       _startBluetoothWeightMonitoring();
     }
 
-    // Reset tare weight to default when switching modes
     _resetTareWeightToDefault();
 
     Get.snackbar(
@@ -458,7 +445,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
 
   Future<void> _connectToScaleAndEnableAutoMode() async {
     try {
-      // Show loading indicator
       Get.dialog(
         AlertDialog(
           content: Row(
@@ -472,10 +458,9 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         barrierDismissible: false,
       );
 
-      // 1. Check if Bluetooth is enabled
       bool bluetoothEnabled = await _bluetoothService.isBluetoothEnabled();
       if (!bluetoothEnabled) {
-        Get.back(); // Close loading dialog
+        Get.back();
 
         await Get.dialog(
           AlertDialog(
@@ -508,8 +493,7 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         return;
       }
 
-      // Update loading dialog message
-      Get.back(); // Close current dialog
+      Get.back();
       Get.dialog(
         AlertDialog(
           content: Row(
@@ -523,22 +507,17 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         barrierDismissible: false,
       );
 
-      // 2. Check if there's a configured scale address in settings
       final settings = _settingsController.systemSettings.value;
       String? configuredScaleAddress = settings?.defaultScaleAddress;
 
       if (configuredScaleAddress?.isNotEmpty ?? false) {
-        // Try to connect to the configured scale
         bool connected = await _bluetoothService.connectToScaleByAddress(
           configuredScaleAddress!,
         );
 
         if (connected) {
-          // Close all dialogs and return to main screen
           Get.until((route) => route.isFirst);
-
           _switchToAutoMode();
-
           Get.snackbar(
             'Connected & Auto Mode Enabled',
             'Successfully connected to your saved scale.',
@@ -550,11 +529,9 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         }
       }
 
-      // 3. No configured scale or connection failed - show device selection
-      Get.back(); // Close loading dialog
+      Get.back();
       await _showScaleSelectionDialog();
     } catch (e) {
-      // Close all dialogs in case of error
       Get.until((route) => route.isFirst);
       Get.snackbar(
         'Connection Error',
@@ -567,20 +544,16 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
 
   Future<void> _showScaleSelectionDialog() async {
     try {
-      // Refresh paired devices
       await _bluetoothService.startScan();
-      await Future.delayed(const Duration(seconds: 2)); // Give time for scan
+      await Future.delayed(const Duration(seconds: 2));
       await _bluetoothService.stopScan();
 
       if (_bluetoothService.devices.isEmpty) {
-        // Close any remaining dialogs first
         Get.until((route) => route.isFirst);
-        // No devices found, show pairing instructions
         _bluetoothService.showClassicBluetoothPairingInstructions();
         return;
       }
 
-      // Show device selection dialog
       await Get.dialog(
         AlertDialog(
           title: const Text('Select Your Scale'),
@@ -635,7 +608,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         ),
       );
     } catch (e) {
-      // Close any remaining dialogs in case of error
       Get.until((route) => route.isFirst);
       Get.snackbar(
         'Error',
@@ -648,10 +620,8 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
 
   Future<void> _connectToSelectedScale(String deviceAddress) async {
     try {
-      // Close the device selection dialog first
       Get.back();
 
-      // Show connecting dialog
       Get.dialog(
         AlertDialog(
           content: Row(
@@ -669,7 +639,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         deviceAddress,
       );
 
-      // Close all dialogs and return to main screen
       Get.until((route) => route.isFirst);
 
       if (connected) {
@@ -690,7 +659,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         );
       }
     } catch (e) {
-      // Ensure we close any open dialogs
       Get.until((route) => route.isFirst);
       Get.snackbar(
         'Connection Error',
@@ -707,7 +675,7 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       if (weight != null && weight >= 0) {
         setState(() {
           _isHoldEnabled = true;
-          _accumulatedWeight += weight; // Accumulate the weight
+          _accumulatedWeight += weight;
         });
 
         Get.snackbar(
@@ -746,7 +714,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
     }
 
     try {
-      // Determine gross and tare weights
       final double grossWeight =
           _isHoldEnabled
               ? _accumulatedWeight
@@ -780,29 +747,17 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         print('📄 Collection ID: ${collection.id}');
         print('🧾 Receipt Number: ${collection.receiptNumber}');
 
-        // **CRITICAL: Send SMS IMMEDIATELY before any other operations**
         print('🚀 PRIORITY 1: Sending SMS notification...');
         await _sendCollectionSMS(collection);
 
-        // **IMPORTANT: Add a safety delay to ensure SMS is fully processed**
         print('⏳ Adding safety delay after SMS...');
         await Future.delayed(const Duration(seconds: 2));
 
-        // Only then proceed with printing (which can cause lifecycle issues)
         print('🖨️  PRIORITY 2: Processing receipt printing...');
         await _printCollectionReceipt(collection);
 
-        // Clear form and show success
         print('✅ PRIORITY 3: Completing collection process...');
         _clearForm();
-
-        // Get.snackbar(
-        //   'Success',
-        //   'Coffee collection posted successfully',
-        //   backgroundColor: Colors.green,
-        //   colorText: Colors.white,
-        //   duration: const Duration(seconds: 3),
-        // );
 
         print('=== COLLECTION PROCESS COMPLETED ===');
       } else {
@@ -836,17 +791,14 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       final orgSettings = _settingsController.organizationSettings.value;
       final sysSettings = _settingsController.systemSettings.value;
 
-      // Get member details for additional info
       final member = _memberController.getMemberByNumber(
         collection.memberNumber,
       );
 
-      // Calculate all-time cumulative weight for this member (across all seasons)
       final memberSummary = await _coffeeCollectionController
           .getMemberSeasonSummary(collection.memberId);
       final allTimeCumulativeWeight = memberSummary['allTimeWeight'] ?? 0.0;
 
-      // Prepare receipt data for coffee collection
       final receiptData = {
         'type': 'coffee_collection',
         'societyName': orgSettings?.societyName ?? 'Coffee Pro Society',
@@ -856,9 +808,7 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         'memberName': collection.memberName,
         'memberNumber': collection.memberNumber,
         'receiptNumber': collection.receiptNumber,
-        'date': DateFormat(
-          'yyyy-MM-dd HH:mm',
-        ).format(collection.collectionDate),
+        'date': DateFormat('yyyy-MM-dd HH:mm').format(collection.collectionDate),
         'productType': collection.productType,
         'seasonName': collection.seasonName,
         'numberOfBags': collection.numberOfBags.toString(),
@@ -870,7 +820,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
                 : '0.00',
         'totalTareWeight': collection.tareWeight.toStringAsFixed(2),
         'netWeight': collection.netWeight.toStringAsFixed(2),
-
         'allTimeCumulativeWeight': allTimeCumulativeWeight.toStringAsFixed(2),
         'entryType':
             collection.isManualEntry ? 'Manual Entry' : 'Scale Reading',
@@ -878,17 +827,13 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         'slogan': orgSettings?.slogan ?? 'Premium Coffee, Premium Returns',
       };
 
-      // Check if using standard print method
       if (sysSettings?.printMethod == 'standard') {
-        // Use dialog based printing for standard method
         await _printService.printReceiptWithDialog(receiptData);
       } else {
-        // Use direct printing for bluetooth method
         await _printService.printReceipt(receiptData);
       }
     } catch (e) {
       print('Failed to print receipt: $e');
-      // Don't show error to user as this is not critical
     }
   }
 
@@ -896,40 +841,27 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
     try {
       print('=== SIMPLIFIED SMS SENDING START ===');
       print('📱 Sending SMS for collection ${collection.receiptNumber}');
-      print('👤 Member: ${collection.memberName} (ID: ${collection.memberId})');
 
-      // Get services
       final smsService = Get.find<SmsService>();
       final settingsService = Get.find<SettingsService>();
       final memberService = Get.find<MemberService>();
 
-      // Check if SMS is enabled
       final sysSettings = settingsService.systemSettings.value;
       if (sysSettings.enableSms != true) {
         print('❌ SMS is disabled in system settings');
         return;
       }
 
-      // Get member phone number
       final member = await memberService.getMemberById(collection.memberId);
       if (member?.phoneNumber == null || member!.phoneNumber!.isEmpty) {
-        print(
-          '❌ No phone number available for member ${collection.memberName}',
-        );
+        print('❌ No phone number available for member ${collection.memberName}');
         return;
       }
 
       final phoneNumberToUse = member.phoneNumber!;
-      print('📱 Using phone number for SMS: $phoneNumberToUse');
-
-      // Validate phone number
-      final validatedNumber = smsService.validateKenyanPhoneNumber(
-        phoneNumberToUse,
-      );
+      final validatedNumber = smsService.validateKenyanPhoneNumber(phoneNumberToUse);
       if (validatedNumber == null) {
-        print(
-          '❌ Invalid phone number for member ${collection.memberName}: $phoneNumberToUse',
-        );
+        print('❌ Invalid phone number for member ${collection.memberName}: $phoneNumberToUse');
         Get.snackbar(
           'SMS Warning',
           'Invalid phone number for ${collection.memberName}: $phoneNumberToUse. Please update to valid Kenyan format.',
@@ -941,20 +873,16 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
         return;
       }
 
-      // Build message content
       final orgSettings = settingsService.organizationSettings.value;
       final societyName = orgSettings.societyName ?? 'Farm Pro Society';
       final factoryName = orgSettings.factory ?? '';
 
-      // Get cumulative weight
       final memberSummary = await _coffeeCollectionController
           .getMemberSeasonSummary(collection.memberId);
       final allTimeCumulativeWeight = memberSummary['allTimeWeight'] ?? 0.0;
 
       final receiptNo = collection.receiptNumber ?? 'N/A';
-      final formattedDate = DateFormat(
-        'dd/MM/yy',
-      ).format(collection.collectionDate);
+      final formattedDate = DateFormat('dd/MM/yy').format(collection.collectionDate);
 
       final message = '''${societyName.toUpperCase()}
 Fac:$factoryName
@@ -968,11 +896,7 @@ Kgs:${collection.netWeight.toStringAsFixed(1)}
 Total:${allTimeCumulativeWeight.toStringAsFixed(1)} kg
 S/By:${collection.userName ?? 'N/A'}''';
 
-      print('📤 Message prepared successfully');
-      print('📤 Message content: $message');
-
-      // Use the robust SMS sending method with retry logic
-      print('📤 Sending SMS using robust method with retry logic...');
+      print('📤 Sending SMS using robust method...');
       final success = await smsService.sendSmsRobust(
         validatedNumber,
         message,
@@ -982,14 +906,8 @@ S/By:${collection.userName ?? 'N/A'}''';
 
       print('📤 SMS send result: $success');
       print('=== SIMPLIFIED SMS SENDING END ===');
-
-      // Show confirmation to user
-      final phoneDisplay =
-          _memberPhoneUpdated ? ' (updated: $validatedNumber)' : '';
     } catch (e) {
       print('❌ EXCEPTION in simplified SMS sending: $e');
-      print('❌ Stack trace: ${StackTrace.current}');
-
       Get.snackbar(
         'SMS Error',
         'Error sending SMS: ${e.toString()}',
@@ -1010,15 +928,13 @@ S/By:${collection.userName ?? 'N/A'}''';
       _numberOfBagsController.text = '1';
       _isHoldEnabled = false;
       _accumulatedWeight = 0.0;
-      _memberPhoneUpdated = false; // Reset phone update flag
+      _memberPhoneUpdated = false;
 
-      // Reset tare weight to default
       final defaultTareWeight =
           _settingsController.systemSettings.value?.defaultTareWeight ?? 0.5;
       _tareWeightController.text = defaultTareWeight.toStringAsFixed(2);
     });
 
-    // Restart weight monitoring after clearing form if in auto mode
     if (_collectionMode == 'auto') {
       if (_gapScaleService.isConnected.value) {
         _startGapWeightMonitoring();
@@ -1028,7 +944,6 @@ S/By:${collection.userName ?? 'N/A'}''';
     }
   }
 
-  /// Edit member phone number (persists to database)
   Future<void> _editMemberPhone() async {
     if (_selectedMember == null) return;
 
@@ -1081,7 +996,7 @@ S/By:${collection.userName ?? 'N/A'}''';
             ),
             if (currentPhone.isNotEmpty)
               TextButton(
-                onPressed: () => Get.back(result: ''), // Clear phone number
+                onPressed: () => Get.back(result: ''),
                 child: const Text('Clear'),
               ),
             ElevatedButton(
@@ -1090,12 +1005,9 @@ S/By:${collection.userName ?? 'N/A'}''';
                 if (phone.isEmpty) {
                   Get.back(result: '');
                 } else {
-                  // Validate phone number format
                   try {
                     final smsService = Get.find<SmsService>();
-                    final validatedPhone = smsService.validateKenyanPhoneNumber(
-                      phone,
-                    );
+                    final validatedPhone = smsService.validateKenyanPhoneNumber(phone);
                     if (validatedPhone != null) {
                       Get.back(result: validatedPhone);
                     } else {
@@ -1121,12 +1033,11 @@ S/By:${collection.userName ?? 'N/A'}''';
             ),
           ],
         ),
-        barrierDismissible: false, // Prevent dismissing by tapping outside
+        barrierDismissible: false,
       );
 
       if (result != null) {
         try {
-          // Show loading
           Get.dialog(
             AlertDialog(
               content: Row(
@@ -1140,7 +1051,6 @@ S/By:${collection.userName ?? 'N/A'}''';
             barrierDismissible: false,
           );
 
-          // Update member phone number in database
           final memberService = Get.find<MemberService>();
           final updatedMember = _selectedMember!.copyWith(
             phoneNumber: result.isEmpty ? null : result,
@@ -1148,16 +1058,12 @@ S/By:${collection.userName ?? 'N/A'}''';
 
           await memberService.updateMember(updatedMember);
 
-          // Update local member object
           setState(() {
             _selectedMember = updatedMember;
             _memberPhoneUpdated = true;
           });
 
-          // Refresh member controller cache
           await _memberController.refreshMembers();
-
-          // Close loading dialog
           Get.back();
 
           if (result.isEmpty) {
@@ -1178,7 +1084,6 @@ S/By:${collection.userName ?? 'N/A'}''';
             );
           }
         } catch (e) {
-          // Close loading dialog if open
           try {
             Get.back();
           } catch (_) {}
@@ -1195,9 +1100,7 @@ S/By:${collection.userName ?? 'N/A'}''';
       }
     } catch (e) {
       print('Error in phone editing dialog: $e');
-      // Handle any unexpected errors during dialog display
     } finally {
-      // Delay disposal until after the current frame to avoid assertion errors
       WidgetsBinding.instance.addPostFrameCallback((_) {
         try {
           phoneController.dispose();
@@ -1218,7 +1121,6 @@ S/By:${collection.userName ?? 'N/A'}''';
 
   Future<void> _disconnectFromScale() async {
     try {
-      // Show confirmation dialog first
       bool? shouldDisconnect = await Get.dialog<bool>(
         AlertDialog(
           title: const Text('Disconnect Scale'),
@@ -1244,7 +1146,6 @@ S/By:${collection.userName ?? 'N/A'}''';
       );
 
       if (shouldDisconnect == true) {
-        // Show progress dialog
         Get.dialog(
           AlertDialog(
             content: Row(
@@ -1258,30 +1159,31 @@ S/By:${collection.userName ?? 'N/A'}''';
           barrierDismissible: false,
         );
 
-        // Disconnect from both services
         await Future.wait([
           _bluetoothService.disconnectScale(),
           _gapScaleService.disconnect(),
         ]);
 
-        // Close all dialogs and return to main screen
         Get.until((route) => route.isFirst);
 
-        // Switch to manual mode
-        await _switchToManualMode();
-
-        Get.snackbar(
-          'Scale Disconnected',
-          'Successfully disconnected from scale. Switched to manual mode.',
-          backgroundColor: Colors.blue,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 3),
-        );
+        // Clerks cannot switch to manual after disconnect; show a warning instead
+        if (_allowManualMode) {
+          await _switchToManualMode();
+        } else {
+          setState(() {
+            _isBluetoothScaleConnected = false;
+          });
+          Get.snackbar(
+            'Scale Disconnected',
+            'Scale disconnected. Please reconnect to continue collecting.',
+            backgroundColor: Colors.orange,
+            colorText: Colors.white,
+            duration: const Duration(seconds: 4),
+          );
+        }
       }
     } catch (e) {
-      // Close any open dialogs
       Get.until((route) => route.isFirst);
-
       Get.snackbar(
         'Disconnect Error',
         'Failed to disconnect from scale: $e',
@@ -1298,96 +1200,90 @@ S/By:${collection.userName ?? 'N/A'}''';
       shape: const RoundedRectangleBorder(
         borderRadius: BorderRadius.vertical(top: Radius.circular(16)),
       ),
-      builder:
-          (context) => Container(
-            padding: const EdgeInsets.symmetric(
-              vertical: 24.0,
-              horizontal: 16.0,
+      builder: (context) => Container(
+        padding: const EdgeInsets.symmetric(vertical: 24.0, horizontal: 16.0),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              'Import Collections',
+              style: Theme.of(context).textTheme.headlineSmall,
+              textAlign: TextAlign.center,
             ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                Text(
-                  'Import Collections',
-                  style: Theme.of(context).textTheme.headlineSmall,
-                  textAlign: TextAlign.center,
-                ),
-                const SizedBox(height: 8.0),
-                Container(
-                  padding: const EdgeInsets.all(12.0),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.withValues(alpha: 0.1),
-                    borderRadius: BorderRadius.circular(8.0),
-                    border: Border.all(
-                      color: Colors.blue.withValues(alpha: 0.3),
-                    ),
-                  ),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+            const SizedBox(height: 8.0),
+            Container(
+              padding: const EdgeInsets.all(12.0),
+              decoration: BoxDecoration(
+                color: Colors.blue.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(8.0),
+                border: Border.all(color: Colors.blue.withValues(alpha: 0.3)),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
                     children: [
-                      Row(
-                        children: [
-                          Icon(Icons.info, color: Colors.blue[700], size: 16),
-                          const SizedBox(width: 8),
-                          Text(
-                            'CSV Import Instructions',
-                            style: TextStyle(
-                              fontSize: 14,
-                              color: Colors.blue[700],
-                              fontWeight: FontWeight.bold,
-                            ),
-                          ),
-                        ],
-                      ),
-                      const SizedBox(height: 8),
+                      Icon(Icons.info, color: Colors.blue[700], size: 16),
+                      const SizedBox(width: 8),
                       Text(
-                        '• Required: Member Number, Net Weight (kg), Date\n'
-                        '• Date formats: yyyy-MM-dd, dd/MM/yyyy, MM/dd/yyyy\n'
-                        '• Optional: Number of Bags (defaults to 1)\n'
-                        '• One member can have multiple collections\n'
-                        '• Duplicates will be skipped automatically',
-                        style: TextStyle(fontSize: 12, color: Colors.blue[600]),
+                        'CSV Import Instructions',
+                        style: TextStyle(
+                          fontSize: 14,
+                          color: Colors.blue[700],
+                          fontWeight: FontWeight.bold,
+                        ),
                       ),
                     ],
                   ),
-                ),
-                const SizedBox(height: 24.0),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _downloadImportTemplate();
-                  },
-                  icon: const Icon(Icons.download),
-                  label: const Text('Download CSV Template'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Theme.of(context).colorScheme.primary,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.all(16.0),
+                  const SizedBox(height: 8),
+                  Text(
+                    '• Required: Member Number, Net Weight (kg), Date\n'
+                    '• Date formats: yyyy-MM-dd, dd/MM/yyyy, MM/dd/yyyy\n'
+                    '• Optional: Number of Bags (defaults to 1)\n'
+                    '• One member can have multiple collections\n'
+                    '• Duplicates will be skipped automatically',
+                    style: TextStyle(fontSize: 12, color: Colors.blue[600]),
                   ),
-                ),
-                const SizedBox(height: 16.0),
-                ElevatedButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    _importCollectionsFromCsv();
-                  },
-                  icon: const Icon(Icons.upload_file),
-                  label: const Text('Import from CSV'),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: Colors.green,
-                    foregroundColor: Colors.white,
-                    padding: const EdgeInsets.all(16.0),
-                  ),
-                ),
-                const SizedBox(height: 16.0),
-                TextButton(
-                  onPressed: () => Navigator.pop(context),
-                  child: const Text('Cancel'),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
+            const SizedBox(height: 24.0),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                _downloadImportTemplate();
+              },
+              icon: const Icon(Icons.download),
+              label: const Text('Download CSV Template'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.primary,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.all(16.0),
+              ),
+            ),
+            const SizedBox(height: 16.0),
+            ElevatedButton.icon(
+              onPressed: () {
+                Navigator.pop(context);
+                _importCollectionsFromCsv();
+              },
+              icon: const Icon(Icons.upload_file),
+              label: const Text('Import from CSV'),
+              style: ElevatedButton.styleFrom(
+                backgroundColor: Colors.green,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.all(16.0),
+              ),
+            ),
+            const SizedBox(height: 16.0),
+            TextButton(
+              onPressed: () => Navigator.pop(context),
+              child: const Text('Cancel'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -1408,7 +1304,6 @@ S/By:${collection.userName ?? 'N/A'}''';
 
   Future<void> _importCollectionsFromCsv() async {
     try {
-      // Show confirmation dialog first
       bool? shouldImport = await Get.dialog<bool>(
         AlertDialog(
           title: const Text('Import Collections'),
@@ -1435,7 +1330,6 @@ S/By:${collection.userName ?? 'N/A'}''';
       );
 
       if (shouldImport == true) {
-        // Show loading dialog
         Get.dialog(
           AlertDialog(
             content: Row(
@@ -1452,21 +1346,16 @@ S/By:${collection.userName ?? 'N/A'}''';
         final importedCollections =
             await _coffeeCollectionController.importCollectionsFromCsv();
 
-        // Close loading dialog
         Get.back();
 
         if (importedCollections.isNotEmpty) {
-          print(
-            'Successfully imported ${importedCollections.length} collections',
-          );
+          print('Successfully imported ${importedCollections.length} collections');
 
-          // Force refresh all related data to ensure UI updates immediately
           await Future.wait([
             _coffeeCollectionController.refreshCollections(),
             _refreshReportsData(),
           ]);
 
-          // Show success message with details
           Get.snackbar(
             'Import Successful',
             'Successfully imported ${importedCollections.length} coffee collections.\n'
@@ -1478,16 +1367,12 @@ S/By:${collection.userName ?? 'N/A'}''';
             maxWidth: 400,
           );
 
-          // Navigate to reports to show updated data if user wants
           _showPostImportOptions(importedCollections.length);
         } else {
           print('No collections were imported');
           Get.snackbar(
             'Import Complete',
-            'No new collections were imported. This might be due to:\n'
-                '• All collections already exist\n'
-                '• Invalid data in CSV file\n'
-                '• No valid members found',
+            'No new collections were imported.',
             backgroundColor: Colors.orange,
             colorText: Colors.white,
             duration: const Duration(seconds: 4),
@@ -1496,7 +1381,6 @@ S/By:${collection.userName ?? 'N/A'}''';
         }
       }
     } catch (e) {
-      // Close any loading dialogs
       try {
         Get.back();
       } catch (_) {}
@@ -1515,15 +1399,8 @@ S/By:${collection.userName ?? 'N/A'}''';
 
   Future<void> _refreshReportsData() async {
     try {
-      // Trigger refresh of all screens that might show collection data
-      // This ensures reports are immediately updated after import
-
-      // Get all controllers that might need refreshing
       final seasonController = Get.find<SeasonController>();
-
-      // Refresh season data which includes collection summaries
       await seasonController.refreshSeasons();
-
       print('Reports data refreshed after collection import');
     } catch (e) {
       print('Error refreshing reports data: $e');
@@ -1533,7 +1410,7 @@ S/By:${collection.userName ?? 'N/A'}''';
   void _showPostImportOptions(int importedCount) {
     Get.dialog(
       AlertDialog(
-        title: Text('Import Complete'),
+        title: const Text('Import Complete'),
         content: Text(
           'Successfully imported $importedCount collections.\n\n'
           'Would you like to view the updated collection reports?',
@@ -1546,7 +1423,6 @@ S/By:${collection.userName ?? 'N/A'}''';
           ElevatedButton(
             onPressed: () {
               Get.back();
-              // Navigate to reports screen
               Get.toNamed('/reports');
             },
             child: const Text('View Reports'),
@@ -1558,25 +1434,18 @@ S/By:${collection.userName ?? 'N/A'}''';
 
   Future<Member?> _searchMemberAsync(String query) async {
     try {
-      // Force refresh members if not loaded
       if (_memberController.members.isEmpty) {
         await _refreshMembersData();
       }
 
-      // Try direct database search for recently imported members
       final memberService = Get.find<MemberService>();
 
-      // First try by exact member number from cache or db
       final memberByNumber = await memberService.getMemberByMemberNumber(query);
       if (memberByNumber != null) {
         return memberByNumber;
       }
 
-      // If not found, perform a quick DB search
-      final quickResults = await memberService.quickSearchMembers(
-        query,
-        limit: 1,
-      );
+      final quickResults = await memberService.quickSearchMembers(query, limit: 1);
       if (quickResults.isNotEmpty) {
         return quickResults.first;
       }
@@ -1589,7 +1458,6 @@ S/By:${collection.userName ?? 'N/A'}''';
 
   Future<List<Member>> _searchMembersAsync(String query) async {
     try {
-      // Force refresh members if not loaded
       if (_memberController.members.isEmpty) {
         await _refreshMembersData();
       }
@@ -1606,9 +1474,8 @@ S/By:${collection.userName ?? 'N/A'}''';
     return ListView.builder(
       shrinkWrap: true,
       itemCount: members.length,
-      physics:
-          const NeverScrollableScrollPhysics(), // Since it's in a scrollable parent
-      itemExtent: 56, // Fixed height for better performance
+      physics: const NeverScrollableScrollPhysics(),
+      itemExtent: 56,
       addAutomaticKeepAlives: false,
       addRepaintBoundaries: false,
       itemBuilder: (context, index) {
@@ -1619,8 +1486,7 @@ S/By:${collection.userName ?? 'N/A'}''';
             setState(() {
               _selectedMember = selectedMember;
               _memberNumberController.text = selectedMember.memberNumber;
-              _memberPhoneUpdated =
-                  false; // Reset phone update flag when selecting new member
+              _memberPhoneUpdated = false;
             });
           },
         );
@@ -1630,7 +1496,6 @@ S/By:${collection.userName ?? 'N/A'}''';
 
   Future<void> _refreshMembersData() async {
     try {
-      // Force refresh members data to ensure latest imported members are available
       await _memberController.refreshMembers();
       print('Members data refreshed for collection screen');
     } catch (e) {
@@ -1668,33 +1533,31 @@ S/By:${collection.userName ?? 'N/A'}''';
                   _showImportOptions();
                   break;
                 case 'history':
-                  // Navigate to collections history
                   break;
               }
             },
-            itemBuilder:
-                (context) => [
-                  const PopupMenuItem(
-                    value: 'import',
-                    child: Row(
-                      children: [
-                        Icon(Icons.upload_file),
-                        SizedBox(width: 8),
-                        Text('Import Collections'),
-                      ],
-                    ),
-                  ),
-                  const PopupMenuItem(
-                    value: 'history',
-                    child: Row(
-                      children: [
-                        Icon(Icons.history),
-                        SizedBox(width: 8),
-                        Text('Collection History'),
-                      ],
-                    ),
-                  ),
-                ],
+            itemBuilder: (context) => [
+              const PopupMenuItem(
+                value: 'import',
+                child: Row(
+                  children: [
+                    Icon(Icons.upload_file),
+                    SizedBox(width: 8),
+                    Text('Import Collections'),
+                  ],
+                ),
+              ),
+              const PopupMenuItem(
+                value: 'history',
+                child: Row(
+                  children: [
+                    Icon(Icons.history),
+                    SizedBox(width: 8),
+                    Text('Collection History'),
+                  ],
+                ),
+              ),
+            ],
           ),
         ],
       ),
@@ -1723,8 +1586,7 @@ S/By:${collection.userName ?? 'N/A'}''';
                             ),
                             Obx(
                               () => Text(
-                                _coffeeCollectionController
-                                    .currentSeasonDisplay,
+                                _coffeeCollectionController.currentSeasonDisplay,
                                 style: Theme.of(context).textTheme.titleMedium
                                     ?.copyWith(fontWeight: FontWeight.bold),
                               ),
@@ -1733,27 +1595,26 @@ S/By:${collection.userName ?? 'N/A'}''';
                         ),
                       ),
                       Obx(
-                        () =>
-                            !_coffeeCollectionController.canCollect
-                                ? Container(
-                                  padding: const EdgeInsets.symmetric(
-                                    horizontal: 8,
-                                    vertical: 4,
+                        () => !_coffeeCollectionController.canCollect
+                            ? Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 4,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: Colors.red,
+                                  borderRadius: BorderRadius.circular(12),
+                                ),
+                                child: const Text(
+                                  'CLOSED',
+                                  style: TextStyle(
+                                    color: Colors.white,
+                                    fontSize: 12,
+                                    fontWeight: FontWeight.bold,
                                   ),
-                                  decoration: BoxDecoration(
-                                    color: Colors.red,
-                                    borderRadius: BorderRadius.circular(12),
-                                  ),
-                                  child: const Text(
-                                    'CLOSED',
-                                    style: TextStyle(
-                                      color: Colors.white,
-                                      fontSize: 12,
-                                      fontWeight: FontWeight.bold,
-                                    ),
-                                  ),
-                                )
-                                : const SizedBox.shrink(),
+                                ),
+                              )
+                            : const SizedBox.shrink(),
                       ),
                     ],
                   ),
@@ -1774,83 +1635,78 @@ S/By:${collection.userName ?? 'N/A'}''';
                       ),
                       const SizedBox(height: 16.0),
 
-                      CustomTextField(
-                        controller: _memberNumberController,
-                        label: 'Member Number or Search',
-                        hint: 'Enter member number or search by name',
-                        prefix: const Icon(Icons.search),
-                        onChanged: (value) async {
-                          if (value.isNotEmpty) {
-                            // Force refresh members if search is not working
-                            if (_memberController.members.isEmpty) {
-                              await _refreshMembersData();
-                            }
+                      // ── Member number + Find button ─────────────────────
+                      Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Expanded(
+                            child: CustomTextField(
+                              controller: _memberNumberController,
+                              label: 'Member Number or Search',
+                              hint: 'Enter member number or search by name',
+                              prefix: const Icon(Icons.search),
+                              onChanged: (value) async {
+                                if (value.isNotEmpty) {
+                                  if (_memberController.members.isEmpty) {
+                                    await _refreshMembersData();
+                                  }
 
-                            // First try to find by exact member number
-                            final memberByNumber = await _memberController
-                                .getMemberByNumber(value);
-                            if (memberByNumber != null) {
-                              setState(() {
-                                _selectedMember = memberByNumber;
-                                _memberPhoneUpdated =
-                                    false; // Reset phone update flag when selecting new member
-                              });
-                              return;
-                            }
+                                  final memberByNumber = await _memberController
+                                      .getMemberByNumber(value);
+                                  if (memberByNumber != null) {
+                                    setState(() {
+                                      _selectedMember = memberByNumber;
+                                      _memberPhoneUpdated = false;
+                                    });
+                                    return;
+                                  }
 
-                            // If not found by exact number, search by name or partial match
-                            final searchResults = _memberController
-                                .searchMembers(value);
-                            if (searchResults.length == 1) {
-                              // If exactly one match found, auto-select it
-                              setState(() {
-                                _selectedMember = searchResults.first;
-                                _memberPhoneUpdated =
-                                    false; // Reset phone update flag when selecting new member
-                              });
-                            } else if (searchResults.isEmpty) {
-                              // Try async search as fallback for recently imported members
-                              try {
-                                final asyncMember = await _searchMemberAsync(
-                                  value,
-                                );
-                                setState(() {
-                                  _selectedMember = asyncMember;
-                                  _memberPhoneUpdated =
-                                      false; // Reset phone update flag when selecting new member
-                                });
-                              } catch (e) {
-                                setState(() {
-                                  _selectedMember = null;
-                                  _memberPhoneUpdated =
-                                      false; // Reset phone update flag when clearing member
-                                });
-                              }
-                            } else {
-                              // Multiple matches found, don't auto-select
-                              setState(() {
-                                _selectedMember = null;
-                                _memberPhoneUpdated =
-                                    false; // Reset phone update flag when clearing member
-                              });
-                            }
-                          } else {
-                            setState(() {
-                              _selectedMember = null;
-                              _memberPhoneUpdated =
-                                  false; // Reset phone update flag when clearing member
-                            });
-                          }
-                        },
-                        validator: (value) {
-                          if (value?.isEmpty ?? true) {
-                            return 'Please enter member number or search term';
-                          }
-                          if (_selectedMember == null) {
-                            return 'Member not found - please check the number or name';
-                          }
-                          return null;
-                        },
+                                  final searchResults =
+                                      _memberController.searchMembers(value);
+                                  if (searchResults.length == 1) {
+                                    setState(() {
+                                      _selectedMember = searchResults.first;
+                                      _memberPhoneUpdated = false;
+                                    });
+                                  } else if (searchResults.isEmpty) {
+                                    try {
+                                      final asyncMember =
+                                          await _searchMemberAsync(value);
+                                      setState(() {
+                                        _selectedMember = asyncMember;
+                                        _memberPhoneUpdated = false;
+                                      });
+                                    } catch (e) {
+                                      setState(() {
+                                        _selectedMember = null;
+                                        _memberPhoneUpdated = false;
+                                      });
+                                    }
+                                  } else {
+                                    setState(() {
+                                      _selectedMember = null;
+                                      _memberPhoneUpdated = false;
+                                    });
+                                  }
+                                } else {
+                                  setState(() {
+                                    _selectedMember = null;
+                                    _memberPhoneUpdated = false;
+                                  });
+                                }
+                              },
+                              validator: (value) {
+                                if (value?.isEmpty ?? true) {
+                                  return 'Please enter member number or search term';
+                                }
+                                if (_selectedMember == null) {
+                                  return 'Member not found - please check the number or name';
+                                }
+                                return null;
+                              },
+                            ),
+                          ),
+                        ],
                       ),
 
                       // Show search results if multiple matches
@@ -1865,77 +1721,62 @@ S/By:${collection.userName ?? 'N/A'}''';
                             ),
                             borderRadius: BorderRadius.circular(8.0),
                           ),
-                          child:
-                              _isMemberSearching
-                                  ? const Padding(
-                                    padding: EdgeInsets.all(16.0),
-                                    child: Center(
-                                      child: Row(
-                                        mainAxisAlignment:
-                                            MainAxisAlignment.center,
-                                        children: [
-                                          SizedBox(
-                                            width: 16,
-                                            height: 16,
-                                            child: CircularProgressIndicator(
-                                              strokeWidth: 2,
-                                            ),
+                          child: _isMemberSearching
+                              ? const Padding(
+                                  padding: EdgeInsets.all(16.0),
+                                  child: Center(
+                                    child: Row(
+                                      mainAxisAlignment: MainAxisAlignment.center,
+                                      children: [
+                                        SizedBox(
+                                          width: 16,
+                                          height: 16,
+                                          child: CircularProgressIndicator(
+                                            strokeWidth: 2,
                                           ),
-                                          SizedBox(width: 8),
-                                          Text('Searching members...'),
-                                        ],
-                                      ),
+                                        ),
+                                        SizedBox(width: 8),
+                                        Text('Searching members...'),
+                                      ],
                                     ),
-                                  )
-                                  : Builder(
-                                    builder: (context) {
-                                      List<Member> searchResults = [];
-
-                                      // Use quick search to avoid UI blocking
-                                      if (_memberController
-                                              .members
-                                              .isNotEmpty &&
-                                          _memberNumberController
-                                              .text
-                                              .isNotEmpty) {
-                                        final query =
-                                            _memberNumberController.text
-                                                .toLowerCase();
-                                        searchResults =
-                                            _memberController.members
-                                                .where(
-                                                  (member) =>
-                                                      member.memberNumber
-                                                          .toLowerCase()
-                                                          .contains(query) ||
-                                                      member.fullName
-                                                          .toLowerCase()
-                                                          .contains(query),
-                                                )
-                                                .take(
-                                                  5,
-                                                ) // Limit to 5 results for performance
-                                                .toList();
-                                      }
-
-                                      if (searchResults.isEmpty) {
-                                        return const Padding(
-                                          padding: EdgeInsets.all(16.0),
-                                          child: Text(
-                                            'No members found matching your search',
-                                            style: TextStyle(
-                                              color: Colors.grey,
-                                            ),
-                                            textAlign: TextAlign.center,
-                                          ),
-                                        );
-                                      }
-
-                                      return _buildMemberSearchResults(
-                                        searchResults,
-                                      );
-                                    },
                                   ),
+                                )
+                              : Builder(
+                                  builder: (context) {
+                                    List<Member> searchResults = [];
+
+                                    if (_memberController.members.isNotEmpty &&
+                                        _memberNumberController.text.isNotEmpty) {
+                                      final query = _memberNumberController.text
+                                          .toLowerCase();
+                                      searchResults = _memberController.members
+                                          .where(
+                                            (member) =>
+                                                member.memberNumber
+                                                    .toLowerCase()
+                                                    .contains(query) ||
+                                                member.fullName
+                                                    .toLowerCase()
+                                                    .contains(query),
+                                          )
+                                          .take(5)
+                                          .toList();
+                                    }
+
+                                    if (searchResults.isEmpty) {
+                                      return const Padding(
+                                        padding: EdgeInsets.all(16.0),
+                                        child: Text(
+                                          'No members found matching your search',
+                                          style: TextStyle(color: Colors.grey),
+                                          textAlign: TextAlign.center,
+                                        ),
+                                      );
+                                    }
+
+                                    return _buildMemberSearchResults(searchResults);
+                                  },
+                                ),
                         ),
                       ],
                     ],
@@ -1966,22 +1807,16 @@ S/By:${collection.userName ?? 'N/A'}''';
                         const SizedBox(height: 12.0),
                         Text('Member Number: ${_selectedMember!.memberNumber}'),
                         Text('Name: ${_selectedMember!.fullName}'),
-                        Text(
-                          'ID Number: ${_selectedMember!.idNumber ?? 'N/A'}',
-                        ),
-                        // Phone number with edit functionality
+                        Text('ID Number: ${_selectedMember!.idNumber ?? 'N/A'}'),
                         Row(
                           children: [
                             Expanded(
                               child: Text(
                                 'Phone: ${_selectedMember!.phoneNumber ?? 'Not set'}',
                                 style: TextStyle(
-                                  color:
-                                      _memberPhoneUpdated ? Colors.blue : null,
+                                  color: _memberPhoneUpdated ? Colors.blue : null,
                                   fontWeight:
-                                      _memberPhoneUpdated
-                                          ? FontWeight.w500
-                                          : null,
+                                      _memberPhoneUpdated ? FontWeight.w500 : null,
                                 ),
                               ),
                             ),
@@ -2016,22 +1851,20 @@ S/By:${collection.userName ?? 'N/A'}''';
                                 vertical: 4,
                               ),
                               decoration: BoxDecoration(
-                                color:
-                                    _selectedMember!.isActive
-                                        ? Colors.green
-                                        : Colors.red,
+                                color: _selectedMember!.isActive
+                                    ? Colors.green
+                                    : Colors.red,
                                 borderRadius: BorderRadius.circular(12),
                               ),
                               child: Text(
-                                _selectedMember!.isActive
-                                    ? 'Active'
-                                    : 'Inactive',
-                                style: Theme.of(
-                                  context,
-                                ).textTheme.bodySmall?.copyWith(
-                                  color: Colors.white,
-                                  fontWeight: FontWeight.bold,
-                                ),
+                                _selectedMember!.isActive ? 'Active' : 'Inactive',
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: Colors.white,
+                                      fontWeight: FontWeight.bold,
+                                    ),
                               ),
                             ),
                           ],
@@ -2049,7 +1882,7 @@ S/By:${collection.userName ?? 'N/A'}''';
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
-                      // Mode Indicator and Toggle
+                      // ── Mode header row ───────────────────────────────────
                       Row(
                         children: [
                           Expanded(
@@ -2066,16 +1899,14 @@ S/By:${collection.userName ?? 'N/A'}''';
                                 vertical: 4,
                               ),
                               decoration: BoxDecoration(
-                                color:
-                                    _collectionMode == 'auto'
-                                        ? Colors.green.withValues(alpha: 0.1)
-                                        : Colors.blue.withValues(alpha: 0.1),
+                                color: _collectionMode == 'auto'
+                                    ? Colors.green.withValues(alpha: 0.1)
+                                    : Colors.blue.withValues(alpha: 0.1),
                                 borderRadius: BorderRadius.circular(16),
                                 border: Border.all(
-                                  color:
-                                      _collectionMode == 'auto'
-                                          ? Colors.green
-                                          : Colors.blue,
+                                  color: _collectionMode == 'auto'
+                                      ? Colors.green
+                                      : Colors.blue,
                                   width: 1,
                                 ),
                               ),
@@ -2087,10 +1918,9 @@ S/By:${collection.userName ?? 'N/A'}''';
                                         ? Icons.bluetooth_connected
                                         : Icons.edit,
                                     size: 14,
-                                    color:
-                                        _collectionMode == 'auto'
-                                            ? Colors.green
-                                            : Colors.blue,
+                                    color: _collectionMode == 'auto'
+                                        ? Colors.green
+                                        : Colors.blue,
                                   ),
                                   const SizedBox(width: 3),
                                   Flexible(
@@ -2101,10 +1931,9 @@ S/By:${collection.userName ?? 'N/A'}''';
                                       style: TextStyle(
                                         fontSize: 11,
                                         fontWeight: FontWeight.bold,
-                                        color:
-                                            _collectionMode == 'auto'
-                                                ? Colors.green
-                                                : Colors.blue,
+                                        color: _collectionMode == 'auto'
+                                            ? Colors.green
+                                            : Colors.blue,
                                       ),
                                       overflow: TextOverflow.ellipsis,
                                     ),
@@ -2116,35 +1945,40 @@ S/By:${collection.userName ?? 'N/A'}''';
                         ],
                       ),
 
-                      // Mode Toggle Buttons (only show if auto mode is available)
+                      // ── Mode toggle buttons ───────────────────────────────
+                      // Shown only when Bluetooth scale is enabled in settings.
+                      // For CLERKS: the Manual button is hidden; only the Auto
+                      // button is shown.
                       if (_isAutoModeAvailable) ...[
                         const SizedBox(height: 12),
                         Row(
                           children: [
-                            Expanded(
-                              child: ElevatedButton.icon(
-                                onPressed: () async {
-                                  if (_collectionMode != 'manual') {
-                                    await _switchToManualMode();
-                                  }
-                                },
-                                icon: const Icon(Icons.edit),
-                                label: const Text('Manual'),
-                                style: ElevatedButton.styleFrom(
-                                  backgroundColor:
-                                      _collectionMode == 'manual'
-                                          ? Theme.of(
-                                            context,
-                                          ).colorScheme.primary
-                                          : null,
-                                  foregroundColor:
-                                      _collectionMode == 'manual'
-                                          ? Colors.white
-                                          : null,
+                            // ── Manual button: hidden for clerks ─────────────
+                            if (_allowManualMode) ...[
+                              Expanded(
+                                child: ElevatedButton.icon(
+                                  onPressed: () async {
+                                    if (_collectionMode != 'manual') {
+                                      await _switchToManualMode();
+                                    }
+                                  },
+                                  icon: const Icon(Icons.edit),
+                                  label: const Text('Manual'),
+                                  style: ElevatedButton.styleFrom(
+                                    backgroundColor: _collectionMode == 'manual'
+                                        ? Theme.of(context).colorScheme.primary
+                                        : null,
+                                    foregroundColor:
+                                        _collectionMode == 'manual'
+                                            ? Colors.white
+                                            : null,
+                                  ),
                                 ),
                               ),
-                            ),
-                            const SizedBox(width: 8),
+                              const SizedBox(width: 8),
+                            ],
+
+                            // ── Auto button: always shown ─────────────────────
                             Expanded(
                               child: Obx(() {
                                 bool isAnyScaleConnected =
@@ -2152,39 +1986,33 @@ S/By:${collection.userName ?? 'N/A'}''';
                                     _bluetoothService.isScaleConnected.value;
 
                                 return ElevatedButton.icon(
-                                  onPressed:
-                                      _isConnectingToScale
-                                          ? null
-                                          : () {
-                                            if (_collectionMode != 'auto') {
-                                              if (isAnyScaleConnected) {
-                                                _switchToAutoMode();
-                                              } else {
-                                                _connectToScaleAndEnableAutoMode();
-                                              }
+                                  onPressed: _isConnectingToScale
+                                      ? null
+                                      : () {
+                                          if (_collectionMode != 'auto') {
+                                            if (isAnyScaleConnected) {
+                                              _switchToAutoMode();
+                                            } else {
+                                              _connectToScaleAndEnableAutoMode();
                                             }
-                                          },
+                                          }
+                                        },
                                   icon: Icon(
                                     _isConnectingToScale
                                         ? Icons.hourglass_empty
                                         : isAnyScaleConnected
-                                        ? Icons.bluetooth_connected
-                                        : Icons.bluetooth,
+                                            ? Icons.bluetooth_connected
+                                            : Icons.bluetooth,
                                   ),
                                   label: Text(
                                     _isConnectingToScale
                                         ? 'Connecting...'
-                                        : isAnyScaleConnected
-                                        ? 'Auto'
                                         : 'Auto',
                                   ),
                                   style: ElevatedButton.styleFrom(
-                                    backgroundColor:
-                                        _collectionMode == 'auto'
-                                            ? Theme.of(
-                                              context,
-                                            ).colorScheme.primary
-                                            : null,
+                                    backgroundColor: _collectionMode == 'auto'
+                                        ? Theme.of(context).colorScheme.primary
+                                        : null,
                                     foregroundColor:
                                         _collectionMode == 'auto'
                                             ? Colors.white
@@ -2195,26 +2023,79 @@ S/By:${collection.userName ?? 'N/A'}''';
                             ),
                           ],
                         ),
+
+                        // ── Clerk-only banner below the Auto button ───────────
+                        if (_isClerk) ...[
+                          const SizedBox(height: 8),
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 8,
+                            ),
+                            decoration: BoxDecoration(
+                              color: Colors.blue.withValues(alpha: 0.08),
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: Colors.blue.withValues(alpha: 0.3),
+                              ),
+                            ),
+                            child: Row(
+                              children: const [
+                                Icon(Icons.info_outline,
+                                    size: 16, color: Colors.blue),
+                                SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    'Bluetooth scale mode only. '
+                                    'Contact an admin to enable manual entry.',
+                                    style: TextStyle(
+                                      fontSize: 12,
+                                      color: Colors.blue,
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
                       ],
 
                       const SizedBox(height: 16.0),
 
-                      // Gross weight
+                      // ── Gross weight ──────────────────────────────────────
+                      // Clerks: always read-only (filled by scale).
+                      // Others: editable only in manual mode.
                       Row(
                         children: [
                           Expanded(
                             child: TextFormField(
                               controller: _grossWeightController,
-                              decoration: const InputDecoration(
-                                labelText: 'Gross Weight (kg)',
+                              decoration: InputDecoration(
+                                labelText: _isClerk
+                                    ? 'Gross Weight (kg)  •  from scale'
+                                    : 'Gross Weight (kg)',
                                 hintText: 'Enter gross weight',
-                                border: OutlineInputBorder(),
+                                border: const OutlineInputBorder(),
+                                // Subtle lock icon to signal read-only to clerks
+                                suffixIcon: _isClerk
+                                    ? const Tooltip(
+                                        message:
+                                            'Filled automatically by the Bluetooth scale',
+                                        child: Icon(Icons.lock_outline,
+                                            size: 18, color: Colors.grey),
+                                      )
+                                    : null,
+                                fillColor: _isClerk
+                                    ? Colors.grey.withValues(alpha: 0.08)
+                                    : null,
+                                filled: _isClerk,
                               ),
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                    decimal: true,
-                                  ),
-                              enabled: _isManualEntry,
+                              keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true,
+                              ),
+                              // Disabled for clerks (always auto); disabled in
+                              // auto mode for non-clerks too.
+                              enabled: _isManualEntry && _allowManualMode,
                               validator: (value) {
                                 if (value == null || value.isEmpty) {
                                   return 'Please enter gross weight';
@@ -2231,14 +2112,6 @@ S/By:${collection.userName ?? 'N/A'}''';
                               },
                             ),
                           ),
-                          // if (_isBluetoothScaleConnected) ...[
-                          //   const SizedBox(width: 16.0),
-                          //   ElevatedButton.icon(
-                          //     onPressed: _getWeightFromScale,
-                          //     icon: const Icon(Icons.scale),
-                          //     label: const Text('Scale'),
-                          //   ),
-                          // ],
                         ],
                       ),
 
@@ -2283,10 +2156,9 @@ S/By:${collection.userName ?? 'N/A'}''';
                                 hintText: 'Weight per container',
                                 border: OutlineInputBorder(),
                               ),
-                              keyboardType:
-                                  const TextInputType.numberWithOptions(
-                                    decimal: true,
-                                  ),
+                              keyboardType: const TextInputType.numberWithOptions(
+                                decimal: true,
+                              ),
                               validator: (value) {
                                 if (value == null || value.isEmpty) {
                                   return 'Please enter tare weight';
@@ -2317,8 +2189,7 @@ S/By:${collection.userName ?? 'N/A'}''';
                           if (_tareWeightController.text.isNotEmpty &&
                               _numberOfBagsController.text.isNotEmpty) {
                             final tarePerBag =
-                                double.tryParse(_tareWeightController.text) ??
-                                0;
+                                double.tryParse(_tareWeightController.text) ?? 0;
                             final numberOfBags =
                                 int.tryParse(_numberOfBagsController.text) ?? 1;
                             final totalTareWeight = tarePerBag * numberOfBags;
@@ -2331,11 +2202,8 @@ S/By:${collection.userName ?? 'N/A'}''';
                               ),
                               child: Row(
                                 children: [
-                                  const Icon(
-                                    Icons.info_outline,
-                                    size: 16,
-                                    color: Colors.grey,
-                                  ),
+                                  const Icon(Icons.info_outline,
+                                      size: 16, color: Colors.grey),
                                   const SizedBox(width: 8.0),
                                   Text(
                                     'Total Tare Weight: ${totalTareWeight.toStringAsFixed(2)} kg',
@@ -2352,7 +2220,7 @@ S/By:${collection.userName ?? 'N/A'}''';
                         },
                       ),
 
-                      // Net Weight (calculated)
+                      // Net Weight (calculated, always read-only)
                       const SizedBox(height: 16.0),
                       TextFormField(
                         controller: _netWeightController,
@@ -2383,10 +2251,8 @@ S/By:${collection.userName ?? 'N/A'}''';
                             children: [
                               Row(
                                 children: [
-                                  const Icon(
-                                    Icons.info_outline,
-                                    color: Colors.orange,
-                                  ),
+                                  const Icon(Icons.info_outline,
+                                      color: Colors.orange),
                                   const SizedBox(width: 8.0),
                                   const Expanded(
                                     child: Text(
@@ -2399,10 +2265,8 @@ S/By:${collection.userName ?? 'N/A'}''';
                                     ),
                                   ),
                                   IconButton(
-                                    icon: const Icon(
-                                      Icons.close,
-                                      color: Colors.orange,
-                                    ),
+                                    icon: const Icon(Icons.close,
+                                        color: Colors.orange),
                                     onPressed: () {
                                       setState(() {
                                         _isHoldEnabled = false;
@@ -2472,23 +2336,21 @@ S/By:${collection.userName ?? 'N/A'}''';
                                     !_selectedMember!.isActive
                                 ? null
                                 : (_coffeeCollectionController
-                                        .isCollecting
-                                        .value
+                                        .isCollecting.value
                                     ? null
                                     : _saveCoffeeCollection),
-                        icon:
-                            _coffeeCollectionController.isCollecting.value
-                                ? const SizedBox(
-                                  width: 16,
-                                  height: 16,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                    valueColor: AlwaysStoppedAnimation<Color>(
-                                      Colors.white,
-                                    ),
+                        icon: _coffeeCollectionController.isCollecting.value
+                            ? const SizedBox(
+                                width: 16,
+                                height: 16,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                  valueColor: AlwaysStoppedAnimation<Color>(
+                                    Colors.white,
                                   ),
-                                )
-                                : const Icon(Icons.save),
+                                ),
+                              )
+                            : const Icon(Icons.save),
                         label: Text(
                           _coffeeCollectionController.isCollecting.value
                               ? 'Posting...'
@@ -2512,7 +2374,7 @@ S/By:${collection.userName ?? 'N/A'}''';
   }
 }
 
-/// Optimized member search item for coffee collection
+/// Optimised member search item for coffee collection
 class _CollectionMemberSearchItem extends StatelessWidget {
   final Member member;
   final Function(Member) onSelected;
@@ -2528,10 +2390,9 @@ class _CollectionMemberSearchItem extends StatelessWidget {
       dense: true,
       leading: CircleAvatar(
         radius: 16,
-        backgroundColor:
-            member.isActive
-                ? Colors.green.withValues(alpha: 0.2)
-                : Colors.red.withValues(alpha: 0.2),
+        backgroundColor: member.isActive
+            ? Colors.green.withValues(alpha: 0.2)
+            : Colors.red.withValues(alpha: 0.2),
         child: Text(
           member.fullName.isNotEmpty ? member.fullName[0] : '?',
           style: TextStyle(
