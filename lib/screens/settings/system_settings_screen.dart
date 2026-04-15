@@ -891,8 +891,8 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                           ),
                           subtitle: Text(
                             _gatewayConfigured
-                                ? 'Use the configured SMS gateway for all notifications.'
-                                : 'Requires gateway credentials below. SMS will fail until configured.',
+                                ? 'Using bulk SMS gateway.'
+                                : 'Configure gateway.',
                             style: TextStyle(
                               fontSize: 12,
                               color:
