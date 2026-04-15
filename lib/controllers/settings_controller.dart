@@ -141,6 +141,7 @@ class SettingsController extends GetxController {
     int? receiptDuplicates,
     bool? autoDisconnectScale,
     String? deliveryRestrictionMode,
+    String? smsMode,
     // SMS Gateway Configuration
     bool? smsGatewayEnabled,
     String? smsGatewayUrl,
@@ -214,6 +215,7 @@ class SettingsController extends GetxController {
             autoDisconnectScale ?? currentSettings.autoDisconnectScale,
         deliveryRestrictionMode:
             deliveryRestrictionMode ?? currentSettings.deliveryRestrictionMode,
+        smsMode: smsMode ?? currentSettings.smsMode,
         // SMS Gateway Configuration
         smsGatewayEnabled:
             smsGatewayEnabled ?? currentSettings.smsGatewayEnabled,
