@@ -16,7 +16,15 @@ import 'inventory_service.dart';
 import 'member_service.dart';
 import 'permission_service.dart';
 
-// Remove the export since PrinterInfo is not available in this version
+// ─── Thermal Receipt Font Scale ──────────────────────────────────────────────
+// Standard 80mm thermal printer fonts (ESC/POS equivalents):
+//   Body text      → 8 pt
+//   Secondary      → 7.5 pt  (labels, sub-info)
+//   Section header → 9 pt    (bold)
+//   Key totals     → 10 pt   (bold)
+//   Org name       → 11 pt   (bold, largest element)
+// Line spacing is kept tight to match thermal roll expectations.
+// ─────────────────────────────────────────────────────────────────────────────
 
 // Define print method enum
 enum PrintMethod { bluetooth, direct }
@@ -26,55 +34,35 @@ class PrintService extends GetxService {
 
   PermissionService? _permissionService;
 
-  // Track the current print method
   final Rx<PrintMethod> currentPrintMethod = PrintMethod.bluetooth.obs;
-
-  // Available printers
   final RxList<dynamic> availablePrinters = <dynamic>[].obs;
-
-  // Selected printer for direct printing
   final Rx<dynamic> selectedPrinter = Rx<dynamic>(null);
 
-  // Print method preference
   RxString printMethod = 'bluetooth'.obs;
-
-  // Connected printer - using dynamic type instead of specific BluetoothDevice type
   Rx<dynamic> connectedPrinter = Rx<dynamic>(null);
 
   Future<PrintService> init() async {
-    // Initialize PermissionService with fallback
     try {
       _permissionService = Get.find<PermissionService>();
     } catch (e) {
       print('Warning: PermissionService not found, continuing without it: $e');
-      // Continue without permission service - it will be null
     }
-
-    // Discover available printers with error handling
     await discoverPrinters();
-
-    // Load any previously saved default printer first
     await loadSavedDefaultPrinter();
-
-    // Ensure system default printer is selected if no saved preference
     if (selectedPrinter.value == null) {
       await ensureSystemDefaultPrinter();
     }
-
     return this;
   }
 
-  // Check if printing is available on this platform
   bool get isPrintingAvailable {
     try {
-      // Try to access the printing plugin
       return availablePrinters.isNotEmpty || selectedPrinter.value != null;
     } catch (e) {
       return false;
     }
   }
 
-  // Show a user-friendly message when printing is not available
   void _showPrintingNotAvailableMessage() {
     Get.snackbar(
       'Printing Not Available',
@@ -86,28 +74,18 @@ class PrintService extends GetxService {
     );
   }
 
-  // Discover available printers for direct printing
   Future<void> discoverPrinters() async {
     try {
       final printers = await Printing.listPrinters();
       availablePrinters.value = printers;
-
-      // Find the system default printer
       dynamic defaultPrinter = _findDefaultPrinter(printers);
-
-      // Set default printer if available, or use first printer as fallback
       if (defaultPrinter != null) {
         selectedPrinter.value = defaultPrinter;
-        print('System default printer set: ${defaultPrinter.name}');
       } else if (printers.isNotEmpty && selectedPrinter.value == null) {
         selectedPrinter.value = printers.first;
-        print(
-          'No default printer found, using first available: ${printers.first.name}',
-        );
       }
     } on MissingPluginException catch (e) {
       print('Printing plugin not available on this platform: $e');
-      // Set empty list to indicate no printers available
       availablePrinters.value = [];
     } catch (e) {
       print('Error discovering printers: $e');
@@ -115,48 +93,32 @@ class PrintService extends GetxService {
     }
   }
 
-  // Helper method to find the system default printer
   dynamic _findDefaultPrinter(List<dynamic> printers) {
     try {
-      // Look for a printer marked as default
       for (var printer in printers) {
-        // Try to access isDefault property safely
         try {
-          if (printer?.isDefault == true) {
-            return printer;
-          }
-        } catch (e) {
-          // isDefault property doesn't exist, continue
-        }
-
-        // Try to check for name containing "default" (case insensitive)
+          if (printer?.isDefault == true) return printer;
+        } catch (_) {}
         try {
           if (printer?.name != null &&
               printer.name.toLowerCase().contains('default')) {
             return printer;
           }
-        } catch (e) {
-          // name property access failed, continue
-        }
+        } catch (_) {}
       }
-
-      // If no explicit default found, the first printer is usually the system default
-      if (printers.isNotEmpty) {
-        return printers.first;
-      }
+      if (printers.isNotEmpty) return printers.first;
     } catch (e) {
       print('Error finding default printer: $e');
     }
     return null;
   }
 
-  // Get system default printer specifically
   Future<dynamic> getSystemDefaultPrinter() async {
     try {
       final printers = await Printing.listPrinters();
       return _findDefaultPrinter(printers);
     } on MissingPluginException catch (e) {
-      print('Printing plugin not available on this platform: $e');
+      print('Printing plugin not available: $e');
       return null;
     } catch (e) {
       print('Error getting system default printer: $e');
@@ -164,116 +126,80 @@ class PrintService extends GetxService {
     }
   }
 
-  // Ensure system default printer is used
   Future<void> ensureSystemDefaultPrinter() async {
     try {
       final defaultPrinter = await getSystemDefaultPrinter();
       if (defaultPrinter != null) {
         selectedPrinter.value = defaultPrinter;
-        print('System default printer ensured: ${defaultPrinter.name}');
-
-        // Save the default printer preference
         await _saveDefaultPrinterPreference(defaultPrinter);
-      } else {
-        print('No system default printer available');
       }
     } catch (e) {
       print('Error ensuring system default printer: $e');
     }
   }
 
-  // Save default printer preference to settings
   Future<void> _saveDefaultPrinterPreference(dynamic printer) async {
     try {
-      if (printer != null && printer.name != null) {
+      if (printer?.name != null) {
         final settingsService = Get.find<SettingsService>();
         await settingsService.saveSetting('default_printer_name', printer.name);
-        print('Default printer preference saved: ${printer.name}');
       }
     } catch (e) {
       print('Error saving default printer preference: $e');
     }
   }
 
-  // Load and set saved default printer
   Future<void> loadSavedDefaultPrinter() async {
     try {
       final settingsService = Get.find<SettingsService>();
       final savedPrinterName = await settingsService.getSetting(
         'default_printer_name',
       );
-
       if (savedPrinterName != null && availablePrinters.isNotEmpty) {
-        // Find the saved printer in available printers
         for (var printer in availablePrinters) {
           try {
             if (printer?.name == savedPrinterName) {
               selectedPrinter.value = printer;
-              print('Loaded saved default printer: $savedPrinterName');
               return;
             }
-          } catch (e) {
-            // Continue if error accessing printer properties
-          }
+          } catch (_) {}
         }
-        print(
-          'Saved printer "$savedPrinterName" not found in available printers',
-        );
       }
     } catch (e) {
       print('Error loading saved default printer: $e');
     }
   }
 
-  // Set the print method using string values
   void setPrintMethod(String method) {
     printMethod.value = method;
-
-    if (method == 'bluetooth') {
-      currentPrintMethod.value = PrintMethod.bluetooth;
-    } else {
-      currentPrintMethod.value = PrintMethod.direct;
-    }
+    currentPrintMethod.value =
+        method == 'bluetooth' ? PrintMethod.bluetooth : PrintMethod.direct;
   }
 
-  // Set the selected printer
   void setSelectedPrinter(dynamic printer) {
     selectedPrinter.value = printer;
-
-    // Save this as the new default preference
     _saveDefaultPrinterPreference(printer);
   }
 
-  // Refresh printers and automatically select system default
   Future<void> refreshAndSelectDefaultPrinter() async {
     try {
-      print('Refreshing printers and selecting system default...');
-
-      // Rediscover printers
       await discoverPrinters();
-
-      // Force selection of system default printer
       await ensureSystemDefaultPrinter();
-
-      print('Printer refresh completed');
     } catch (e) {
       print('Error refreshing printers: $e');
     }
   }
 
-  // Check necessary permissions based on printing method
   Future<bool> _checkPrintingPermissions() async {
     if (!Platform.isAndroid) return true;
 
     if (currentPrintMethod.value == PrintMethod.bluetooth) {
-      // Check Bluetooth permissions first
       bool hasBluetoothPermission = false;
       if (_permissionService != null) {
         hasBluetoothPermission =
             await _permissionService!.checkBluetoothPermission();
       }
       if (!hasBluetoothPermission) {
-        // Check if location is needed for Bluetooth (common on Android)
         bool hasLocationPermission = false;
         if (_permissionService != null) {
           hasLocationPermission =
@@ -294,8 +220,6 @@ class PrintService extends GetxService {
             );
           }
         }
-
-        // Request Bluetooth permission
         if (_permissionService != null) {
           hasBluetoothPermission =
               await _permissionService!.requestBluetoothPermission();
@@ -313,28 +237,15 @@ class PrintService extends GetxService {
       }
     }
 
-    // For all printing methods, we need storage access for PDF generation
     bool hasStoragePermission = false;
     if (_permissionService != null) {
       hasStoragePermission = await _permissionService!.checkStoragePermission();
     }
     if (!hasStoragePermission) {
-      print('Requesting storage permission for printing...');
-      Get.snackbar(
-        'Storage Permission Required',
-        'Storage access is needed to generate and save receipts',
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Colors.orange,
-        colorText: Colors.white,
-        duration: const Duration(seconds: 3),
-      );
-
-      // Request the permission
       if (_permissionService != null) {
         hasStoragePermission =
             await _permissionService!.requestStoragePermission();
       }
-
       if (!hasStoragePermission) {
         Get.snackbar(
           'Storage Permission Denied',
@@ -346,44 +257,26 @@ class PrintService extends GetxService {
         return false;
       }
     }
-
     return true;
   }
 
-  // Print receipt
   Future<void> printReceipt(Map<String, dynamic> receiptData) async {
-    // Check permissions first
-    if (!await _checkPrintingPermissions()) {
-      return;
-    }
-
-    // For direct printing, ensure we're using the system default printer
+    if (!await _checkPrintingPermissions()) return;
     if (currentPrintMethod.value == PrintMethod.direct) {
       await ensureSystemDefaultPrinter();
     }
 
-    // Check if this is an inventory sale receipt and get number of copies
     final isInventorySale = receiptData['type'] == 'sale';
     int copiesToPrint = 1;
-
     if (isInventorySale) {
       try {
         final settingsService = Get.find<SettingsService>();
         copiesToPrint = settingsService.systemSettings.value.receiptDuplicates;
-        print(
-          '📄 Receipt copies setting: $copiesToPrint (type: ${receiptData['type']})',
-        );
       } catch (e) {
-        print('Error getting receipt duplicates setting: $e');
-        copiesToPrint = 1; // Default to single copy on error
+        copiesToPrint = 1;
       }
-    } else {
-      print(
-        '📄 Not an inventory sale receipt (type: ${receiptData['type']}), using 1 copy',
-      );
     }
 
-    // Print with the specified number of copies
     if (currentPrintMethod.value == PrintMethod.bluetooth) {
       await _printViaBluetoothPrinter(receiptData, copiesToPrint);
     } else {
@@ -391,16 +284,12 @@ class PrintService extends GetxService {
     }
   }
 
-  // Print using Bluetooth printer - simplified version
   Future<void> _printViaBluetoothPrinter(
     Map<String, dynamic> receiptData,
     int copies,
   ) async {
     try {
-      // In a real implementation, this would connect to a Bluetooth printer
-      // For now, we'll just show the print dialog
       final pdf = await _generateReceiptPdf(receiptData, copies: copies);
-
       try {
         await Printing.layoutPdf(
           onLayout: (PdfPageFormat format) async => pdf,
@@ -409,16 +298,7 @@ class PrintService extends GetxService {
       } on MissingPluginException catch (e) {
         print('Printing plugin not available: $e');
         _showPrintingNotAvailableMessage();
-        return;
       }
-
-      // Get.snackbar(
-      //   'Success',
-      //   'Receipt prepared for printing',
-      //   snackPosition: SnackPosition.BOTTOM,
-      //   backgroundColor: Colors.green,
-      //   colorText: Colors.white
-      // );
     } catch (e) {
       print('Error printing via Bluetooth: $e');
       Get.snackbar(
@@ -431,7 +311,6 @@ class PrintService extends GetxService {
     }
   }
 
-  // Print using direct printer connection via printing package
   Future<void> _printViaDirectPrinter(
     Map<String, dynamic> receiptData,
     int copies,
@@ -440,11 +319,7 @@ class PrintService extends GetxService {
       if (selectedPrinter.value == null) {
         throw Exception('No printer selected for direct printing');
       }
-
-      // Create PDF document with specified number of copies
       final pdf = await _generateReceiptPdf(receiptData, copies: copies);
-
-      // Print directly to selected printer
       try {
         await Printing.directPrintPdf(
           printer: selectedPrinter.value,
@@ -455,7 +330,6 @@ class PrintService extends GetxService {
         _showPrintingNotAvailableMessage();
         return;
       }
-
       Get.snackbar(
         'Success',
         'Receipt printed successfully',
@@ -474,6 +348,17 @@ class PrintService extends GetxService {
       );
     }
   }
+
+  // ─── PDF Generation ─────────────────────────────────────────────────────────
+  // Font size constants (points) aligned to 80mm thermal ESC/POS conventions.
+  static const double _fsOrgName = 11.0;   // Society / org name — largest
+  static const double _fsSubHeader = 9.0;  // Factory, address
+  static const double _fsSection = 8.5;    // Section headings (ITEMS, WEIGHT…)
+  static const double _fsBody = 8.0;       // Standard body rows
+  static const double _fsSmall = 7.5;      // Labels, secondary info
+  static const double _fsTotalKey = 9.0;   // Grand-total label
+  static const double _fsTotalVal = 9.0;   // Grand-total value
+  static const double _fsFooter = 7.0;     // Footer / slogan
 
   Future<Uint8List> _generateReceiptPdf(
     Map<String, dynamic> receiptData, {
@@ -503,590 +388,331 @@ class PrintService extends GetxService {
       pdf.addPage(
         pw.Page(
           pageFormat: PdfPageFormat.roll80.copyWith(
-            marginLeft: 10,
-            marginRight: 10,
+            marginLeft: 6,
+            marginRight: 6,
             marginTop: 4,
-            marginBottom: 4,
+            marginBottom: 6,
           ),
           build: (pw.Context context) {
             return pw.Column(
-              crossAxisAlignment: pw.CrossAxisAlignment.start,
+              crossAxisAlignment: pw.CrossAxisAlignment.stretch,
               children: [
-                // ── LOGO ──────────────────────────────────────
+                // ── LOGO ──────────────────────────────────────────────────
                 if (logoImage != null) ...[
-                  pw.SizedBox(height: 4),
                   pw.Center(
-                    child: pw.Container(
-                      height: 90,
+                    child: pw.SizedBox(
+                      height: 48,
                       child: pw.Image(logoImage, fit: pw.BoxFit.contain),
                     ),
                   ),
-                  pw.SizedBox(height: 6),
+                  pw.SizedBox(height: 3),
                 ],
 
-                // ── HEADER ────────────────────────────────────
+                // ── ORG HEADER ────────────────────────────────────────────
                 pw.Center(
                   child: pw.Text(
                     receiptData['societyName'] ?? 'Farm Fresh',
                     style: pw.TextStyle(
-                      fontSize: 30,
+                      fontSize: _fsOrgName,
                       fontWeight: pw.FontWeight.bold,
                     ),
+                    textAlign: pw.TextAlign.center,
                   ),
                 ),
-                if (receiptData['factory'] != null)
+                if (receiptData['factory'] != null) ...[
+                  pw.SizedBox(height: 1),
                   pw.Center(
                     child: pw.Text(
                       receiptData['factory'],
                       style: pw.TextStyle(
-                        fontSize: 24,
+                        fontSize: _fsSubHeader,
                         fontWeight: pw.FontWeight.bold,
                       ),
+                      textAlign: pw.TextAlign.center,
                     ),
                   ),
-                if (receiptData['societyAddress'] != null)
+                ],
+                if (receiptData['societyAddress'] != null) ...[
+                  pw.SizedBox(height: 1),
                   pw.Center(
                     child: pw.Text(
                       receiptData['societyAddress'],
-                      style: const pw.TextStyle(fontSize: 17),
+                      style: const pw.TextStyle(fontSize: _fsSmall),
+                      textAlign: pw.TextAlign.center,
                     ),
                   ),
-
-                pw.SizedBox(height: 6),
+                ],
+                if (receiptData['phoneNumber'] != null) ...[
+                  pw.SizedBox(height: 1),
+                  pw.Center(
+                    child: pw.Text(
+                      receiptData['phoneNumber'],
+                      style: const pw.TextStyle(fontSize: _fsSmall),
+                      textAlign: pw.TextAlign.center,
+                    ),
+                  ),
+                ],
+                pw.SizedBox(height: 2),
                 pw.Center(
                   child: pw.Text(
-                    'Printed: $formattedDate at $formattedTime',
-                    style: const pw.TextStyle(fontSize: 15),
+                    'Printed: $formattedDate  $formattedTime',
+                    style: const pw.TextStyle(fontSize: _fsSmall),
                   ),
                 ),
-                pw.SizedBox(height: 10),
+                pw.SizedBox(height: 3),
+                pw.Divider(thickness: 0.5),
+                pw.SizedBox(height: 2),
 
-                // ── RECEIPT # ─────────────────────────────────
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text(
-                      'Receipt #:',
-                      style: const pw.TextStyle(fontSize: 18),
-                    ),
-                    pw.Text(
-                      receiptData['receiptNumber'] ?? 'N/A',
-                      style: pw.TextStyle(
-                        fontSize: 18,
-                        fontWeight: pw.FontWeight.bold,
-                      ),
-                    ),
-                  ],
+                // ── RECEIPT META ──────────────────────────────────────────
+                _labelValueRow(
+                  'Receipt #',
+                  receiptData['receiptNumber'] ?? 'N/A',
+                  bold: true,
                 ),
-                pw.Divider(),
+                _labelValueRow('Member', receiptData['memberName'] ?? 'N/A', bold: true),
+                _labelValueRow('Member #', receiptData['memberNumber'] ?? 'N/A'),
+                _labelValueRow(
+                  receiptData['type'] == 'coffee_collection'
+                      ? 'Collection Date'
+                      : 'Date',
+                  receiptData['date'] ?? 'N/A',
+                ),
+                _labelValueRow('Served By', receiptData['servedBy'] ?? 'N/A', bold: true),
+                pw.SizedBox(height: 3),
 
-                // ── MEMBER INFO ───────────────────────────────
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text('Member:', style: const pw.TextStyle(fontSize: 18)),
-                    pw.Text(
-                      receiptData['memberName'] ?? 'N/A',
-                      style: pw.TextStyle(
-                        fontSize: 18,
-                        fontWeight: pw.FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text(
-                      'Member #:',
-                      style: const pw.TextStyle(fontSize: 18),
-                    ),
-                    pw.Text(
-                      receiptData['memberNumber'] ?? 'N/A',
-                      style: const pw.TextStyle(fontSize: 18),
-                    ),
-                  ],
-                ),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text(
-                      receiptData['type'] == 'coffee_collection'
-                          ? 'Collection Date:'
-                          : 'Date:',
-                      style: const pw.TextStyle(fontSize: 18),
-                    ),
-                    pw.Text(
-                      receiptData['date'] ?? 'N/A',
-                      style: const pw.TextStyle(fontSize: 18),
-                    ),
-                  ],
-                ),
-                pw.Row(
-                  mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                  children: [
-                    pw.Text(
-                      'Served By:',
-                      style: const pw.TextStyle(fontSize: 18),
-                    ),
-                    pw.Text(
-                      receiptData['servedBy'] ?? 'N/A',
-                      style: pw.TextStyle(
-                        fontSize: 18,
-                        fontWeight: pw.FontWeight.bold,
-                      ),
-                    ),
-                  ],
-                ),
-                pw.SizedBox(height: 10),
-
-                // ── COFFEE COLLECTION DETAILS ─────────────────
+                // ── COFFEE COLLECTION DETAILS ─────────────────────────────
                 if (receiptData['type'] == 'coffee_collection') ...[
-                  pw.Text(
-                    'COFFEE COLLECTION DETAILS',
-                    style: pw.TextStyle(
-                      fontSize: 22,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
+                  _sectionHeader('COFFEE COLLECTION'),
+                  _labelValueRow(
+                    'Coffee Type',
+                    receiptData['productType'] ?? 'N/A',
+                    bold: true,
                   ),
-                  pw.SizedBox(height: 5),
-                  pw.Table(
-                    border: null,
-                    columnWidths: const {
-                      0: pw.FlexColumnWidth(3),
-                      1: pw.FlexColumnWidth(2),
-                    },
-                    children: [
-                      pw.TableRow(
-                        children: [
-                          pw.Text(
-                            'Coffee Type:',
-                            style: pw.TextStyle(
-                              fontSize: 20,
-                              fontWeight: pw.FontWeight.bold,
-                            ),
-                          ),
-                          pw.Container(
-                            padding: const pw.EdgeInsets.symmetric(
-                              horizontal: 4,
-                              vertical: 2,
-                            ),
-                            decoration: pw.BoxDecoration(
-                              color: PdfColors.grey200,
-                              borderRadius: pw.BorderRadius.circular(3),
-                            ),
-                            child: pw.Text(
-                              receiptData['productType'] ?? 'N/A',
-                              style: pw.TextStyle(
-                                fontSize: 20,
-                                fontWeight: pw.FontWeight.bold,
-                              ),
-                              textAlign: pw.TextAlign.center,
-                            ),
-                          ),
-                        ],
-                      ),
-                      pw.TableRow(
-                        children: [
-                          pw.Text(
-                            'Season:',
-                            style: pw.TextStyle(
-                              fontSize: 18,
-                              fontWeight: pw.FontWeight.bold,
-                            ),
-                          ),
-                          pw.Text(
-                            receiptData['seasonName'] ?? 'N/A',
-                            style: pw.TextStyle(
-                              fontSize: 18,
-                              fontWeight: pw.FontWeight.bold,
-                            ),
-                            textAlign: pw.TextAlign.right,
-                          ),
-                        ],
-                      ),
-                      pw.TableRow(
-                        children: [
-                          pw.Text(
-                            'Number of Bags:',
-                            style: pw.TextStyle(
-                              fontSize: 18,
-                              fontWeight: pw.FontWeight.bold,
-                            ),
-                          ),
-                          pw.Text(
-                            receiptData['numberOfBags'] ?? 'N/A',
-                            style: pw.TextStyle(
-                              fontSize: 18,
-                              fontWeight: pw.FontWeight.bold,
-                            ),
-                            textAlign: pw.TextAlign.right,
-                          ),
-                        ],
-                      ),
-                    ],
-                  ),
-                  pw.SizedBox(height: 10),
+                  _labelValueRow('Season', receiptData['seasonName'] ?? 'N/A'),
+                  _labelValueRow('No. of Bags', receiptData['numberOfBags'] ?? 'N/A'),
+                  pw.SizedBox(height: 3),
                 ],
 
-                // ── SALE ITEMS ────────────────────────────────
+                // ── SALE ITEMS ────────────────────────────────────────────
                 if (receiptData['type'] == 'sale') ...[
-                  pw.Text(
-                    'ITEMS',
-                    style: pw.TextStyle(
-                      fontSize: 22,
-                      fontWeight: pw.FontWeight.bold,
-                    ),
-                  ),
-                  pw.SizedBox(height: 5),
-                  pw.Table(
-                    border: null,
-                    columnWidths: const {
-                      0: pw.FlexColumnWidth(4),
-                      1: pw.FlexColumnWidth(2),
-                      2: pw.FlexColumnWidth(2),
-                      3: pw.FlexColumnWidth(2),
-                    },
+                  _sectionHeader('ITEMS'),
+                  pw.SizedBox(height: 2),
+                  // Column header row
+                  pw.Row(
                     children: [
-                      pw.TableRow(
+                      pw.Expanded(
+                        flex: 4,
+                        child: pw.Text(
+                          'Item',
+                          style: pw.TextStyle(
+                            fontSize: _fsSmall,
+                            fontWeight: pw.FontWeight.bold,
+                          ),
+                        ),
+                      ),
+                      pw.SizedBox(
+                        width: 28,
+                        child: pw.Text(
+                          'Qty',
+                          style: pw.TextStyle(
+                            fontSize: _fsSmall,
+                            fontWeight: pw.FontWeight.bold,
+                          ),
+                          textAlign: pw.TextAlign.right,
+                        ),
+                      ),
+                      pw.SizedBox(
+                        width: 36,
+                        child: pw.Text(
+                          'Price',
+                          style: pw.TextStyle(
+                            fontSize: _fsSmall,
+                            fontWeight: pw.FontWeight.bold,
+                          ),
+                          textAlign: pw.TextAlign.right,
+                        ),
+                      ),
+                      pw.SizedBox(
+                        width: 40,
+                        child: pw.Text(
+                          'Total',
+                          style: pw.TextStyle(
+                            fontSize: _fsSmall,
+                            fontWeight: pw.FontWeight.bold,
+                          ),
+                          textAlign: pw.TextAlign.right,
+                        ),
+                      ),
+                    ],
+                  ),
+                  pw.Divider(thickness: 0.3),
+                  // Item rows
+                  ...((receiptData['items'] as List).map<pw.Widget>((item) {
+                    return pw.Padding(
+                      padding: const pw.EdgeInsets.symmetric(vertical: 1),
+                      child: pw.Row(
                         children: [
-                          pw.Text(
-                            'Item',
-                            style: pw.TextStyle(
-                              fontSize: 19,
-                              fontWeight: pw.FontWeight.bold,
+                          pw.Expanded(
+                            flex: 4,
+                            child: pw.Text(
+                              item['productName'],
+                              style: const pw.TextStyle(fontSize: _fsBody),
                             ),
                           ),
-                          pw.Text(
-                            'Qty',
-                            style: pw.TextStyle(
-                              fontSize: 19,
-                              fontWeight: pw.FontWeight.bold,
+                          pw.SizedBox(
+                            width: 28,
+                            child: pw.Text(
+                              item['quantity'],
+                              style: const pw.TextStyle(fontSize: _fsBody),
+                              textAlign: pw.TextAlign.right,
                             ),
-                            textAlign: pw.TextAlign.right,
                           ),
-                          pw.Text(
-                            'Price',
-                            style: pw.TextStyle(
-                              fontSize: 19,
-                              fontWeight: pw.FontWeight.bold,
+                          pw.SizedBox(
+                            width: 36,
+                            child: pw.Text(
+                              item['unitPrice'],
+                              style: const pw.TextStyle(fontSize: _fsBody),
+                              textAlign: pw.TextAlign.right,
                             ),
-                            textAlign: pw.TextAlign.right,
                           ),
-                          pw.Text(
-                            'Total',
-                            style: pw.TextStyle(
-                              fontSize: 19,
-                              fontWeight: pw.FontWeight.bold,
+                          pw.SizedBox(
+                            width: 40,
+                            child: pw.Text(
+                              item['totalPrice'],
+                              style: const pw.TextStyle(fontSize: _fsBody),
+                              textAlign: pw.TextAlign.right,
                             ),
-                            textAlign: pw.TextAlign.right,
                           ),
                         ],
                       ),
-                      ...((receiptData['items'] as List).map<pw.TableRow>((
-                        item,
-                      ) {
-                        return pw.TableRow(
-                          children: [
-                            pw.Text(
-                              item['productName'],
-                              style: const pw.TextStyle(fontSize: 17),
-                            ),
-                            pw.Text(
-                              item['quantity'],
-                              style: const pw.TextStyle(fontSize: 17),
-                              textAlign: pw.TextAlign.right,
-                            ),
-                            pw.Text(
-                              item['unitPrice'],
-                              style: const pw.TextStyle(fontSize: 17),
-                              textAlign: pw.TextAlign.right,
-                            ),
-                            pw.Text(
-                              item['totalPrice'],
-                              style: const pw.TextStyle(fontSize: 17),
-                              textAlign: pw.TextAlign.right,
-                            ),
-                          ],
-                        );
-                      })),
-                    ],
-                  ),
-                  pw.SizedBox(height: 5),
+                    );
+                  })),
+                  pw.SizedBox(height: 2),
                   pw.Divider(thickness: 0.5),
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Text(
-                        'Subtotal:',
-                        style: pw.TextStyle(
-                          fontSize: 21,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                      pw.Text(
-                        receiptData['totalAmount'] ?? '0.00',
-                        style: pw.TextStyle(
-                          fontSize: 21,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                    ],
+                  // Totals
+                  _labelValueRow(
+                    'Subtotal',
+                    receiptData['totalAmount'] ?? '0.00',
+                    bold: true,
+                    fontSize: _fsTotalKey,
                   ),
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Text('Paid:', style: const pw.TextStyle(fontSize: 18)),
-                      pw.Text(
-                        receiptData['paidAmount'] ?? '0.00',
-                        style: const pw.TextStyle(fontSize: 18),
-                      ),
-                    ],
-                  ),
+                  _labelValueRow('Paid', receiptData['paidAmount'] ?? '0.00'),
                   if (receiptData['saleType'] == 'CREDIT' &&
-                      (double.tryParse(receiptData['balanceAmount'] ?? '0') ??
+                      (double.tryParse(
+                                receiptData['balanceAmount'] ?? '0',
+                              ) ??
                               0) >
                           0) ...[
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      children: [
-                        pw.Text(
-                          'This Sale Balance:',
-                          style: const pw.TextStyle(fontSize: 18),
-                        ),
-                        pw.Text(
-                          receiptData['balanceAmount'] ?? '0.00',
-                          style: const pw.TextStyle(fontSize: 18),
-                        ),
-                      ],
+                    _labelValueRow(
+                      'This Sale Balance',
+                      receiptData['balanceAmount'] ?? '0.00',
                     ),
-                    pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      children: [
-                        pw.Text(
-                          'Total Balance:',
-                          style: pw.TextStyle(
-                            fontSize: 21,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                        pw.Text(
-                          'KSh ${receiptData['totalBalance'] ?? '0.00'}',
-                          style: pw.TextStyle(
-                            fontSize: 21,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                      ],
+                    _labelValueRow(
+                      'Total Balance',
+                      'KSh ${receiptData['totalBalance'] ?? '0.00'}',
+                      bold: true,
+                      fontSize: _fsTotalKey,
                     ),
                   ],
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Text(
-                        'Sale Mode:',
-                        style: const pw.TextStyle(fontSize: 18),
-                      ),
-                      pw.Text(
-                        receiptData['saleType'] ?? 'N/A',
-                        style: const pw.TextStyle(fontSize: 18),
-                      ),
-                    ],
-                  ),
+                  _labelValueRow('Sale Mode', receiptData['saleType'] ?? 'N/A'),
                 ] else ...[
-                  // ── WEIGHT DETAILS ─────────────────────────────
-                  pw.Text(
-                    'WEIGHT DETAILS',
-                    style: pw.TextStyle(
-                      fontSize: 22,
-                      fontWeight: pw.FontWeight.bold,
+                  // ── WEIGHT DETAILS ──────────────────────────────────────
+                  _sectionHeader('WEIGHT DETAILS'),
+                  if (receiptData['grossWeight'] != null &&
+                      receiptData['totalTareWeight'] != null) ...[
+                    _labelValueRow(
+                      'Gross Weight',
+                      '${receiptData['grossWeight']} kg',
                     ),
-                  ),
-                  pw.SizedBox(height: 5),
-                  pw.Table(
-                    border: null,
-                    columnWidths: const {
-                      0: pw.FlexColumnWidth(3),
-                      1: pw.FlexColumnWidth(2),
-                    },
-                    children: [
-                      if (receiptData['grossWeight'] != null &&
-                          receiptData['totalTareWeight'] != null) ...[
-                        pw.TableRow(
-                          children: [
-                            pw.Text(
-                              'Gross Weight:',
-                              style: const pw.TextStyle(fontSize: 18),
-                            ),
-                            pw.Text(
-                              '${receiptData['grossWeight']} kg',
-                              style: const pw.TextStyle(fontSize: 18),
-                              textAlign: pw.TextAlign.right,
-                            ),
-                          ],
-                        ),
-                        if (receiptData['tareWeightPerBag'] != null)
-                          pw.TableRow(
-                            children: [
-                              pw.Text(
-                                'Tare / Bag:',
-                                style: const pw.TextStyle(fontSize: 18),
-                              ),
-                              pw.Text(
-                                '${receiptData['tareWeightPerBag']} kg',
-                                style: const pw.TextStyle(fontSize: 18),
-                                textAlign: pw.TextAlign.right,
-                              ),
-                            ],
-                          ),
-                        pw.TableRow(
-                          children: [
-                            pw.Text(
-                              'Total Tare:',
-                              style: const pw.TextStyle(fontSize: 18),
-                            ),
-                            pw.Text(
-                              '${receiptData['totalTareWeight']} kg',
-                              style: const pw.TextStyle(fontSize: 18),
-                              textAlign: pw.TextAlign.right,
-                            ),
-                          ],
-                        ),
-                        pw.TableRow(
-                          children: [
-                            pw.Text(
-                              'Net Weight:',
-                              style: pw.TextStyle(
-                                fontSize: 21,
-                                fontWeight: pw.FontWeight.bold,
-                              ),
-                            ),
-                            pw.Text(
-                              '${receiptData['netWeight']} kg',
-                              style: pw.TextStyle(
-                                fontSize: 21,
-                                fontWeight: pw.FontWeight.bold,
-                              ),
-                              textAlign: pw.TextAlign.right,
-                            ),
-                          ],
-                        ),
-                      ] else ...[
-                        pw.TableRow(
-                          children: [
-                            pw.Text(
-                              'Weight:',
-                              style: pw.TextStyle(
-                                fontSize: 21,
-                                fontWeight: pw.FontWeight.bold,
-                              ),
-                            ),
-                            pw.Text(
-                              '${receiptData['weight'] ?? 'N/A'} kg',
-                              style: pw.TextStyle(
-                                fontSize: 21,
-                                fontWeight: pw.FontWeight.bold,
-                              ),
-                              textAlign: pw.TextAlign.right,
-                            ),
-                          ],
-                        ),
-                      ],
-                    ],
-                  ),
+                    if (receiptData['tareWeightPerBag'] != null)
+                      _labelValueRow(
+                        'Tare / Bag',
+                        '${receiptData['tareWeightPerBag']} kg',
+                      ),
+                    _labelValueRow(
+                      'Total Tare',
+                      '${receiptData['totalTareWeight']} kg',
+                    ),
+                    _labelValueRow(
+                      'Net Weight',
+                      '${receiptData['netWeight']} kg',
+                      bold: true,
+                      fontSize: _fsTotalKey,
+                    ),
+                  ] else ...[
+                    _labelValueRow(
+                      'Weight',
+                      '${receiptData['weight'] ?? 'N/A'} kg',
+                      bold: true,
+                      fontSize: _fsTotalKey,
+                    ),
+                  ],
                 ],
 
-                // ── SEASON TOTAL ───────────────────────────────
+                // ── SEASON / CUMULATIVE TOTAL ─────────────────────────────
                 if (receiptData['type'] == 'coffee_collection' &&
                     receiptData['allTimeCumulativeWeight'] != null) ...[
+                  pw.SizedBox(height: 2),
                   pw.Divider(thickness: 0.5),
-                  pw.Container(
-                    decoration: const pw.BoxDecoration(
-                      color: PdfColors.grey100,
-                    ),
-                    padding: const pw.EdgeInsets.all(5),
-                    child: pw.Row(
-                      mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                      children: [
-                        pw.Text(
-                          'Season Total:',
-                          style: pw.TextStyle(
-                            fontSize: 22,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                        pw.Text(
-                          '${receiptData['allTimeCumulativeWeight']} kg',
-                          style: pw.TextStyle(
-                            fontSize: 22,
-                            fontWeight: pw.FontWeight.bold,
-                          ),
-                        ),
-                      ],
-                    ),
+                  _labelValueRow(
+                    'Season Total',
+                    '${receiptData['allTimeCumulativeWeight']} kg',
+                    bold: true,
+                    fontSize: _fsTotalKey,
                   ),
-                  pw.SizedBox(height: 5),
                 ] else if (receiptData['cumulativeWeight'] != null) ...[
+                  pw.SizedBox(height: 2),
                   pw.Divider(thickness: 0.5),
-                  pw.Row(
-                    mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
-                    children: [
-                      pw.Text(
-                        'Month-to-date Total:',
-                        style: pw.TextStyle(
-                          fontSize: 20,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                      pw.Text(
-                        '${receiptData['cumulativeWeight']} kg',
-                        style: pw.TextStyle(
-                          fontSize: 20,
-                          fontWeight: pw.FontWeight.bold,
-                        ),
-                      ),
-                    ],
+                  _labelValueRow(
+                    'Month-to-Date Total',
+                    '${receiptData['cumulativeWeight']} kg',
+                    bold: true,
+                    fontSize: _fsTotalKey,
                   ),
-                  pw.SizedBox(height: 5),
                 ],
 
-                pw.Divider(),
+                pw.SizedBox(height: 3),
+                pw.Divider(thickness: 0.5),
 
-                // ── SIGNATURE SECTION (non-collection) ──────────
+                // ── SIGNATURE SECTION (non-collection) ───────────────────
                 if (receiptData['type'] != 'coffee_collection') ...[
-                  pw.SizedBox(height: 10),
+                  pw.SizedBox(height: 6),
                   pw.Text(
                     'RECEIVED BY',
                     style: pw.TextStyle(
-                      fontSize: 15,
+                      fontSize: _fsSmall,
                       fontWeight: pw.FontWeight.bold,
                     ),
                   ),
-                  pw.SizedBox(height: 8),
+                  pw.SizedBox(height: 10),
                   pw.Text(
-                    'ID No: _____________________',
-                    style: const pw.TextStyle(fontSize: 14),
-                  ),
-                  pw.SizedBox(height: 8),
-                  pw.Text(
-                    'Sign: ______________________',
-                    style: const pw.TextStyle(fontSize: 14),
+                    'ID No: _______________________',
+                    style: const pw.TextStyle(fontSize: _fsSmall),
                   ),
                   pw.SizedBox(height: 10),
-                  pw.Divider(thickness: 0.5),
+                  pw.Text(
+                    'Sign:  _______________________',
+                    style: const pw.TextStyle(fontSize: _fsSmall),
+                  ),
+                  pw.SizedBox(height: 6),
+                  pw.Divider(thickness: 0.3),
                 ],
 
-                // ── FOOTER ────────────────────────────────────────
+                // ── FOOTER ────────────────────────────────────────────────
+                pw.SizedBox(height: 2),
                 pw.Center(
                   child: pw.Text(
                     receiptData['slogan'] ?? 'Thank you!',
-                    style: const pw.TextStyle(fontSize: 14),
+                    style: const pw.TextStyle(fontSize: _fsFooter),
+                    textAlign: pw.TextAlign.center,
                   ),
                 ),
+                pw.SizedBox(height: 1),
                 pw.Center(
                   child: pw.Text(
                     'A product of Inuka Technologies',
-                    style: const pw.TextStyle(fontSize: 12),
+                    style: const pw.TextStyle(fontSize: _fsFooter),
+                    textAlign: pw.TextAlign.center,
                   ),
                 ),
               ],
@@ -1099,56 +725,83 @@ class PrintService extends GetxService {
     return pdf.save();
   }
 
-  // Print receipt with a printer dialog for user selection
+  // ── Helpers ────────────────────────────────────────────────────────────────
+
+  /// Renders a label-on-left / value-on-right row used throughout the receipt.
+  pw.Widget _labelValueRow(
+    String label,
+    String value, {
+    bool bold = false,
+    double fontSize = _fsBody,
+  }) {
+    final style = bold
+        ? pw.TextStyle(fontSize: fontSize, fontWeight: pw.FontWeight.bold)
+        : pw.TextStyle(fontSize: fontSize);
+    final labelStyle = pw.TextStyle(fontSize: _fsSmall);
+
+    return pw.Padding(
+      padding: const pw.EdgeInsets.symmetric(vertical: 0.8),
+      child: pw.Row(
+        mainAxisAlignment: pw.MainAxisAlignment.spaceBetween,
+        children: [
+          pw.Text('$label:', style: labelStyle),
+          pw.Text(value, style: style),
+        ],
+      ),
+    );
+  }
+
+  /// Renders a bold section-header line with a thin underline.
+  pw.Widget _sectionHeader(String title) {
+    return pw.Column(
+      crossAxisAlignment: pw.CrossAxisAlignment.start,
+      children: [
+        pw.SizedBox(height: 2),
+        pw.Text(
+          title,
+          style: pw.TextStyle(
+            fontSize: _fsSection,
+            fontWeight: pw.FontWeight.bold,
+          ),
+        ),
+        pw.Divider(thickness: 0.3),
+      ],
+    );
+  }
+
+  // ─── Public API ─────────────────────────────────────────────────────────────
+
   Future<void> printReceiptWithDialog(Map<String, dynamic> receiptData) async {
-    // Check permissions first
-    if (!await _checkPrintingPermissions()) {
-      return;
-    }
+    if (!await _checkPrintingPermissions()) return;
 
     try {
-      // Check if this is an inventory sale receipt and get number of copies
       final isInventorySale = receiptData['type'] == 'sale';
       int copiesToPrint = 1;
-
       if (isInventorySale) {
         try {
           final settingsService = Get.find<SettingsService>();
           copiesToPrint =
               settingsService.systemSettings.value.receiptDuplicates;
-          print(
-            '📄 [Dialog] Receipt copies setting: $copiesToPrint (type: ${receiptData['type']})',
-          );
         } catch (e) {
-          print('Error getting receipt duplicates setting: $e');
-          copiesToPrint = 1; // Default to single copy on error
+          copiesToPrint = 1;
         }
-      } else {
-        print(
-          '📄 [Dialog] Not an inventory sale receipt (type: ${receiptData['type']}), using 1 copy',
-        );
       }
 
-      // Generate PDF with multiple pages if needed
-      print('📄 [Dialog] Generating PDF with $copiesToPrint copies');
       final pdf = await _generateReceiptPdf(receiptData, copies: copiesToPrint);
-
-      // Show print dialog with optimized format for 80mm receipt
       try {
         await Printing.layoutPdf(
           onLayout: (_) => pdf,
           name: 'Receipt ${receiptData['receiptNumber'] ?? ''}',
           format: PdfPageFormat.roll80.copyWith(
-            marginLeft: 4,
-            marginRight: 4,
+            marginLeft: 6,
+            marginRight: 6,
             marginTop: 4,
-            marginBottom: 4,
+            marginBottom: 6,
           ),
         );
       } on MissingPluginException catch (e) {
         print('Printing plugin not available: $e');
         _showPrintingNotAvailableMessage();
-        return;
       }
     } catch (e) {
       print('Error printing with dialog: $e');
@@ -1162,24 +815,17 @@ class PrintService extends GetxService {
     }
   }
 
-  // Method to save PDF to external storage
   Future<String?> saveReceiptToPdf(Map<String, dynamic> receiptData) async {
     try {
-      print('Checking storage permission for saving PDF...');
-      // Check and request storage permissions
       bool hasPermission = false;
       if (_permissionService != null) {
         hasPermission = await _permissionService!.checkStoragePermission();
       }
       if (!hasPermission) {
-        print(
-          'Permission not granted initially, requesting storage permission',
-        );
         if (_permissionService != null) {
           hasPermission = await _permissionService!.requestStoragePermission();
         }
         if (!hasPermission) {
-          print('Failed to get storage permission after request');
           Get.snackbar(
             'Permission Denied',
             'Storage permission is required to save receipts',
@@ -1191,44 +837,25 @@ class PrintService extends GetxService {
         }
       }
 
-      // Try with a different directory strategy depending on the outcome
       Directory? directory;
-      String filePath;
-
       try {
-        print('Attempting to use downloads directory');
         directory = await getExternalStorageDirectory();
       } catch (e) {
-        print(
-          'Error getting external directory: $e, falling back to documents directory',
-        );
         directory = await getApplicationDocumentsDirectory();
       }
 
-      print('Using directory: ${directory?.path ?? 'null'}');
-
-      // Create a receipts directory if it doesn't exist
       Directory receiptsDir = Directory('${directory?.path ?? ''}/receipts');
       if (!await receiptsDir.exists()) {
-        print('Creating receipts directory');
         await receiptsDir.create(recursive: true);
       }
 
-      // Generate a unique filename based on date and receipt data
-      String timestamp = DateTime.now().millisecondsSinceEpoch.toString();
-      String memberNumber = receiptData['memberNumber'] ?? 'unknown';
-      filePath = '${receiptsDir.path}/receipt_${memberNumber}_$timestamp.pdf';
+      final timestamp = DateTime.now().millisecondsSinceEpoch.toString();
+      final memberNumber = receiptData['memberNumber'] ?? 'unknown';
+      final filePath =
+          '${receiptsDir.path}/receipt_${memberNumber}_$timestamp.pdf';
 
-      print('Saving PDF to: $filePath');
-
-      // Generate the PDF document
       final pdf = await _generateReceiptPdf(receiptData);
-
-      // Save the PDF to the file
-      final file = File(filePath);
-      await file.writeAsBytes(pdf);
-
-      print('PDF saved successfully');
+      await File(filePath).writeAsBytes(pdf);
       return filePath;
     } catch (e) {
       print('Error saving PDF: $e');
@@ -1243,7 +870,6 @@ class PrintService extends GetxService {
     }
   }
 
-  // Calculate monthly total for coffee collections for a member
   double calculateCoffeeMonthlyTotal(
     List<CoffeeCollection> collections,
     String memberNumber,
@@ -1252,34 +878,18 @@ class PrintService extends GetxService {
     final startOfMonth = DateTime(now.year, now.month, 1);
     final endOfMonth = DateTime(now.year, now.month + 1, 0, 23, 59, 59);
 
-    final memberCollections =
-        collections
-            .where(
-              (c) =>
-                  c.memberNumber == memberNumber &&
-                  c.collectionDate.isAfter(startOfMonth) &&
-                  c.collectionDate.isBefore(endOfMonth),
-            )
-            .toList();
-
-    double total = 0;
-    for (var collection in memberCollections) {
-      total += collection.netWeight;
-    }
-
-    return total;
+    return collections
+        .where(
+          (c) =>
+              c.memberNumber == memberNumber &&
+              c.collectionDate.isAfter(startOfMonth) &&
+              c.collectionDate.isBefore(endOfMonth),
+        )
+        .fold(0.0, (sum, c) => sum + c.netWeight);
   }
 
-  // Below are the methods that were previously using BlueThermalPrinter, updated to use a more generic approach
-
-  // Simple list to simulate paired devices
   Future<List<dynamic>> getPairedDevices() async {
     try {
-      // In a real implementation, this would return Bluetooth devices
-      // For now, we'll just return an empty list
-      print(
-        "Returning empty device list as BlueThermalPrinter is not available",
-      );
       return [];
     } catch (e) {
       print('Error getting paired devices: $e');
@@ -1287,14 +897,8 @@ class PrintService extends GetxService {
     }
   }
 
-  // Connect to a specific printer
   Future<bool> connectPrinter(dynamic device) async {
     try {
-      // In a real implementation, this would connect to a Bluetooth device
-      // For now, we'll just return success and use the direct printing
-      print(
-        "Simulating printer connection success (direct printing will be used instead)",
-      );
       connectedPrinter.value = device;
       return true;
     } catch (e) {
@@ -1303,29 +907,21 @@ class PrintService extends GetxService {
     }
   }
 
-  // Print coffee collection receipt
   Future<bool> printCoffeeCollectionReceipt(CoffeeCollection collection) async {
     try {
-      // Check permissions first
-      if (!await _checkPrintingPermissions()) {
-        return false;
-      }
+      if (!await _checkPrintingPermissions()) return false;
 
-      // Format the DateTime as a string
       final formattedDate = DateFormat(
         'yyyy-MM-dd HH:mm',
       ).format(collection.collectionDate);
 
-      // Get organization settings from SettingsService
       final settingsService = Get.find<SettingsService>();
       final orgSettings = settingsService.organizationSettings.value;
 
-      // Calculate all-time cumulative weight for this member (across all seasons)
       final coffeeCollectionService = Get.find<CoffeeCollectionService>();
       final seasonSummary = await coffeeCollectionService
           .getMemberSeasonSummary(collection.memberId);
 
-      // Ensure we have a valid cumulative weight value
       double allTimeCumulativeWeight = 0.0;
       try {
         final rawWeight = seasonSummary['allTimeWeight'];
@@ -1333,32 +929,27 @@ class PrintService extends GetxService {
           allTimeCumulativeWeight =
               double.tryParse(rawWeight.toString()) ?? 0.0;
         }
-
-        // Additional validation to ensure the weight is valid and not negative
         if (allTimeCumulativeWeight < 0 ||
             allTimeCumulativeWeight.isNaN ||
             allTimeCumulativeWeight.isInfinite) {
           allTimeCumulativeWeight = 0.0;
         }
       } catch (e) {
-        print('Error parsing cumulative weight for member: $e');
         allTimeCumulativeWeight = 0.0;
       }
 
-      // Get logo path and verify it exists
       final logoPath = orgSettings.logoPath;
       String? verifiedLogoPath;
       if (logoPath != null) {
         final logoFile = File(logoPath);
-        if (await logoFile.exists()) {
-          verifiedLogoPath = logoPath;
-        }
+        if (await logoFile.exists()) verifiedLogoPath = logoPath;
       }
 
       final receiptData = {
         'societyName': orgSettings.societyName,
         'factory': orgSettings.factory,
         'societyAddress': orgSettings.address,
+        'phoneNumber': orgSettings.phoneNumber,
         'receiptNumber': collection.receiptNumber ?? 'N/A',
         'date': formattedDate,
         'memberNumber': collection.memberNumber,
@@ -1370,35 +961,23 @@ class PrintService extends GetxService {
             collection.numberOfBags > 0
                 ? (collection.tareWeight / collection.numberOfBags)
                     .toStringAsFixed(1)
-                : '0.0', // Tare weight per bag
-        'totalTareWeight': collection.tareWeight.toStringAsFixed(
-          1,
-        ), // Total tare weight (already calculated)
+                : '0.0',
+        'totalTareWeight': collection.tareWeight.toStringAsFixed(1),
         'netWeight': collection.netWeight.toStringAsFixed(1),
         'numberOfBags': collection.numberOfBags.toString(),
         'entryType':
             collection.isManualEntry ? 'Manual Entry' : 'Scale Reading',
         'servedBy': collection.userName ?? 'N/A',
-        'allTimeCumulativeWeight': allTimeCumulativeWeight.toStringAsFixed(
-          1,
-        ), // All-time cumulative weight across all seasons
+        'allTimeCumulativeWeight': allTimeCumulativeWeight.toStringAsFixed(1),
         'logoPath': verifiedLogoPath,
         'slogan': orgSettings.slogan,
-        'type': 'coffee_collection', // Identifier for coffee collection receipt
+        'type': 'coffee_collection',
       };
 
-      print(
-        'Printing coffee collection receipt for ${collection.memberName} with all-time cumulative: ${allTimeCumulativeWeight.toStringAsFixed(2)} kg',
-      );
-
-      // Coffee collection receipts typically print 1 copy
-      const copiesToPrint = 1;
-
-      // Print receipt based on current method
       if (printMethod.value == 'bluetooth') {
-        await _printViaBluetoothPrinter(receiptData, copiesToPrint);
+        await _printViaBluetoothPrinter(receiptData, 1);
       } else {
-        await _printViaDirectPrinter(receiptData, copiesToPrint);
+        await _printViaDirectPrinter(receiptData, 1);
       }
 
       return true;
@@ -1415,47 +994,37 @@ class PrintService extends GetxService {
     }
   }
 
-  /// Print inventory sale receipt with cumulative credit calculation
   Future<bool> printInventorySaleReceipt(Sale sale) async {
     try {
-      // Check permissions first
-      if (!await _checkPrintingPermissions()) {
-        return false;
-      }
+      if (!await _checkPrintingPermissions()) return false;
 
-      // Format the DateTime as a string
       final formattedDate = DateFormat(
         'yyyy-MM-dd HH:mm',
       ).format(sale.saleDate);
 
-      // Get organization settings from SettingsService
       final settingsService = Get.find<SettingsService>();
       final orgSettings = settingsService.organizationSettings.value;
 
-      // Calculate cumulative credit for this member (current inventory season only)
       final inventoryService = Get.find<InventoryService>();
       final cumulativeCredit = await inventoryService.getMemberSeasonCredit(
         sale.memberId!,
       );
 
-      // Get member details
       final memberService = Get.find<MemberService>();
       final member = await memberService.getMemberById(sale.memberId!);
 
-      // Get logo path and verify it exists
       final logoPath = orgSettings.logoPath;
       String? verifiedLogoPath;
       if (logoPath != null) {
         final logoFile = File(logoPath);
-        if (await logoFile.exists()) {
-          verifiedLogoPath = logoPath;
-        }
+        if (await logoFile.exists()) verifiedLogoPath = logoPath;
       }
 
       final receiptData = {
         'societyName': orgSettings.societyName,
         'factory': orgSettings.factory,
         'societyAddress': orgSettings.address,
+        'phoneNumber': orgSettings.phoneNumber,
         'receiptNumber': sale.receiptNumber ?? 'N/A',
         'date': formattedDate,
         'memberNumber': member?.memberNumber ?? 'N/A',
@@ -1469,24 +1038,17 @@ class PrintService extends GetxService {
         'servedBy': sale.userName ?? 'N/A',
         'logoPath': verifiedLogoPath,
         'slogan': orgSettings.slogan,
-        'type': 'inventory_sale', // Identifier for inventory sale receipt
+        'type': 'inventory_sale',
         'notes': sale.notes,
       };
 
-      print(
-        'Printing inventory sale receipt for ${sale.memberName} with cumulative credit: KSh ${cumulativeCredit.toStringAsFixed(2)}',
-      );
-
-      // Get number of copies from system settings for inventory sales
       int copiesToPrint = 1;
       try {
         copiesToPrint = settingsService.systemSettings.value.receiptDuplicates;
       } catch (e) {
-        print('Error getting receipt duplicates setting: $e');
-        copiesToPrint = 1; // Default to single copy on error
+        copiesToPrint = 1;
       }
 
-      // Print receipt based on current method
       if (printMethod.value == 'bluetooth') {
         await _printViaBluetoothPrinter(receiptData, copiesToPrint);
       } else {
@@ -1507,34 +1069,31 @@ class PrintService extends GetxService {
     }
   }
 
-  // Helper method to handle location permission for features
   Future<bool> _ensureLocationPermissionForFeature(String featureName) async {
     if (_permissionService != null) {
       return await _permissionService!.ensureLocationPermissionForFeature(
         featureName,
       );
-    } else {
-      // If no permission service available, show a basic dialog
-      final result = await Get.dialog<bool>(
-        AlertDialog(
-          title: Text('$featureName Requires Permissions'),
-          content: const Text(
-            'This feature requires permissions to work properly. '
-            'Please enable required permissions in settings.',
-          ),
-          actions: [
-            TextButton(
-              onPressed: () => Get.back(result: false),
-              child: const Text('Cancel'),
-            ),
-            ElevatedButton(
-              onPressed: () => Get.back(result: true),
-              child: const Text('Continue'),
-            ),
-          ],
-        ),
-      );
-      return result ?? false;
     }
+    final result = await Get.dialog<bool>(
+      AlertDialog(
+        title: Text('$featureName Requires Permissions'),
+        content: const Text(
+          'This feature requires permissions to work properly. '
+          'Please enable required permissions in settings.',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Get.back(result: false),
+            child: const Text('Cancel'),
+          ),
+          ElevatedButton(
+            onPressed: () => Get.back(result: true),
+            child: const Text('Continue'),
+          ),
+        ],
+      ),
+    );
+    return result ?? false;
   }
 }

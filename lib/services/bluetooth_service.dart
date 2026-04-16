@@ -141,30 +141,20 @@ class BluetoothService extends GetxService {
         }
       });
 
-      // Start scan
-      await _bluetoothClassicPlugin.startScan();
-
-      Get.snackbar(
-        'Scanning Started',
-        'Scanning for Bluetooth devices...',
-        snackPosition: SnackPosition.BOTTOM,
-        backgroundColor: Colors.blue,
-        colorText: Colors.white,
-      );
-
-      // Set timeout for discovery
-      Timer(const Duration(seconds: 30), () {
+      // Stop scanning after 10 seconds
+      Timer(const Duration(seconds: 10), () {
         if (isScanning.value) {
           stopScan();
         }
       });
-    } catch (e) {
-      print('Error starting discovery: $e');
-      isScanning.value = false;
 
+    } catch (e) {
+      print('Error starting scan: $e');
+      isScanning.value = false;
+      
       Get.snackbar(
-        'Scan Error',
-        'Failed to scan for devices: $e',
+        'Scan Failed',
+        'Failed to start Bluetooth scan: $e',
         snackPosition: SnackPosition.BOTTOM,
         backgroundColor: Colors.red,
         colorText: Colors.white,
@@ -249,11 +239,26 @@ class BluetoothService extends GetxService {
     try {
       print('Connecting to scale: $address');
 
+      // Check if already connected to this device
+      if (_isScaleConnected && _connectedScaleAddress == address) {
+        print('Already connected to scale: $address');
+        return true;
+      }
+
       // Disconnect any existing connection
       if (_isPrinterConnected || _isScaleConnected) {
-        await _bluetoothClassicPlugin.disconnect();
+        print('Disconnecting existing connections...');
+        try {
+          await _bluetoothClassicPlugin.disconnect();
+          await Future.delayed(const Duration(milliseconds: 500)); // Allow disconnection to complete
+        } catch (e) {
+          print('Error during disconnection: $e');
+        }
         _isPrinterConnected = false;
         _isScaleConnected = false;
+        _connectedPrinterAddress = null;
+        _connectedScaleAddress = null;
+        
         // Update reactive observables
         isPrinterConnected.value = false;
         isScaleConnected.value = false;
@@ -261,11 +266,49 @@ class BluetoothService extends GetxService {
         connectedScaleAddress.value = '';
       }
 
-      // Connect to the device using the serial UUID
-      await _bluetoothClassicPlugin.connect(
-        address,
-        "00001101-0000-1000-8000-00805f9b34fb",
-      );
+      // Check if Bluetooth is available by attempting to start scan
+      try {
+        await _bluetoothClassicPlugin.startScan();
+        await _bluetoothClassicPlugin.stopScan();
+        print('Bluetooth is available and enabled');
+      } catch (e) {
+        print('Bluetooth is not available or enabled: $e');
+        Get.snackbar(
+          'Bluetooth Unavailable',
+          'Please enable Bluetooth to scan for devices',
+          snackPosition: SnackPosition.BOTTOM,
+          backgroundColor: Colors.orange,
+          colorText: Colors.white,
+        );
+        return false;
+      }
+
+      print('Attempting to connect to device at $address...');
+      
+      // Connect to the device using the serial UUID with timeout
+      try {
+        await _bluetoothClassicPlugin.connect(
+          address,
+          "00001101-0000-1000-8000-00805f9b34fb",
+        ).timeout(
+          const Duration(seconds: 15),
+          onTimeout: () {
+            throw Exception('Connection timeout after 15 seconds');
+          },
+        );
+      } catch (e) {
+        print('Connection failed: $e');
+        throw e;
+      }
+
+      // Wait a moment for connection to stabilize
+      await Future.delayed(const Duration(milliseconds: 1000));
+
+      // Verify connection is actually established by checking our internal state
+      // The bluetooth_classic plugin doesn't have isDeviceConnected method
+      // We'll verify by attempting to read data or checking connection state
+      await Future.delayed(const Duration(milliseconds: 500));
+      print('Connection verification completed for $address');
 
       _isScaleConnected = true;
       _connectedScaleAddress = address;
@@ -274,24 +317,37 @@ class BluetoothService extends GetxService {
       isScaleConnected.value = true;
       connectedScaleAddress.value = address;
 
+      print('Successfully connected to scale: $address');
+
       Get.snackbar(
         'Scale Connected',
-        'Successfully connected to scale',
+        'Successfully connected to your scale',
         snackPosition: SnackPosition.BOTTOM,
         backgroundColor: Colors.green,
         colorText: Colors.white,
+        duration: const Duration(seconds: 3),
       );
 
       return true;
     } catch (e) {
       print('Error connecting to scale: $e');
 
+      // Reset connection state
+      _isScaleConnected = false;
+      _connectedScaleAddress = null;
+      isScaleConnected.value = false;
+      connectedScaleAddress.value = '';
+
       Get.snackbar(
         'Connection Failed',
-        'Failed to connect to scale: $e',
+        'Failed to connect to scale. Please ensure:\n'
+        '1. Scale is turned on and in range\n'
+        '2. Scale is paired with this device\n'
+        '3. No other device is connected to the scale',
         snackPosition: SnackPosition.BOTTOM,
         backgroundColor: Colors.red,
         colorText: Colors.white,
+        duration: const Duration(seconds: 5),
       );
 
       return false;

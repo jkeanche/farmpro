@@ -1268,7 +1268,7 @@ class CoffeeCollectionService extends GetxService {
             '📱 Sending SMS ${i + 1}/${collections.length} for ${collection.memberName}',
           );
 
-          // Use the robust SMS sending method from the service
+          // Use the main SMS sending method which respects current mode settings
           final success = await smsService.sendCoffeeCollectionSMS(collection);
 
           if (success) {

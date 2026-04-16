@@ -896,12 +896,10 @@ Kgs:${collection.netWeight.toStringAsFixed(1)}
 Total:${allTimeCumulativeWeight.toStringAsFixed(1)} kg
 S/By:${collection.userName ?? 'N/A'}''';
 
-      print('📤 Sending SMS using robust method...');
-      final success = await smsService.sendSmsRobust(
+      print('📤 Sending SMS using current mode settings...');
+      final success = await smsService.sendSms(
         validatedNumber,
         message,
-        maxRetries: 3,
-        priority: 2,
       );
 
       print('📤 SMS send result: $success');

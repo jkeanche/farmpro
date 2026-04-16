@@ -866,7 +866,7 @@ class _SystemSettingsScreenState extends State<SystemSettingsScreen> {
                                         : Colors.orange,
                               ),
                               const SizedBox(width: 8),
-                              const Text('Gateway / Bulk SMS'),
+                              const Text('Bulk SMS Gateway'),
                               const SizedBox(width: 6),
                               if (!_gatewayConfigured)
                                 Container(

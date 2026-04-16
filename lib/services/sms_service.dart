@@ -36,21 +36,30 @@ class SmsService extends GetxService {
   final RxInt smsQueueSize = 0.obs;
 
   Future<SmsService> init() async {
-    print('🔄 Initializing SMS Service...');
+    print('ðŸ’» Initializing SMS Service...');
 
     // Initialize PermissionService with fallback
     try {
       _permissionService = Get.find<PermissionService>();
-      print('✅ PermissionService found and initialized');
+      print('âœ¨ PermissionService found and initialized');
     } catch (e) {
       print('Warning: PermissionService not found, continuing without it: $e');
       // Continue without permission service - it will be null
     }
 
+    // Initialize messenger (FlutterBackgroundMessenger doesn't have explicit init method)
+    try {
+      print('ð¸ SMS messenger ready for use');
+      // FlutterBackgroundMessenger is ready to use without explicit initialization
+    } catch (e) {
+      print('â ï¸ SMS messenger setup failed: $e');
+      print('ð¸ Will attempt to initialize during sending');
+    }
+
     // Check if SMS is available on this device
     if (Platform.isAndroid) {
       try {
-        print('📱 Running on Android, checking SMS capabilities...');
+        print('ð¸ Running on Android, checking SMS capabilities...');
 
         // Check SMS permissions using permission service
         bool granted = false;
@@ -60,37 +69,39 @@ class SmsService extends GetxService {
 
           // If not granted, request permission once
           if (!granted) {
-            print('📋 SMS permission not yet granted — requesting now');
+            print('ð¸ SMS permission not yet granted â€” requesting now');
             granted = await _permissionService!.requestSmsPermission();
           } else {
-            print('✅ SMS permission already granted (persisted)');
+            print('âœ¨ SMS permission already granted (persisted)');
           }
 
-          print('📋 Final SMS permission result: $granted');
+          print('ð¸ Final SMS permission result: $granted');
         } else {
-          print('⚠️  No PermissionService available for SMS permission check');
+          print('â˜ ï¸ No PermissionService available for SMS permission check');
         }
 
         isSmsAvailable.value = granted;
 
         if (isSmsAvailable.value) {
-          print('✅ SMS permissions granted - SMS service active');
+          print('âœ¨ SMS permissions granted - SMS service active');
 
           // Test if the messenger is properly initialized
           try {
-            print('🔧 Testing SMS messenger initialization...');
-            // We'll test this during actual sending
+            print('ð¸ Testing SMS messenger readiness...');
+            // FlutterBackgroundMessenger doesn't have isInitialized property
+            // It's ready to use as long as we have permissions
+            print('â SMS messenger is ready for use');
           } catch (e) {
-            print('⚠️  SMS messenger test failed: $e');
+            print('â ï¸ SMS messenger test failed: $e');
           }
         } else {
-          print('⚠️  SMS permissions not granted - will continue attempting');
+          print('â˜ ï¸ SMS permissions not granted - will continue attempting');
         }
       } catch (e) {
         print('Error requesting SMS permission: $e');
       }
     } else {
-      print('⚠️  Not running on Android - SMS not supported');
+      print('â˜ ï¸ Not running on Android - SMS not supported');
       isSmsAvailable.value = false;
     }
 
@@ -98,8 +109,62 @@ class SmsService extends GetxService {
     _startQueueProcessor();
     _startHealthMonitor();
 
-    print('✅ SMS Service initialization complete');
+    // Observe settings changes to react to SMS mode changes
+    _setupSettingsObserver();
+
+    print('âœ¨ SMS Service initialization complete');
     return this;
+  }
+
+  /// Setup observer for SMS settings changes
+  void _setupSettingsObserver() {
+    try {
+      // Listen to system settings changes
+      ever(_settingsService.systemSettings, (SystemSettings settings) {
+        print('🔄 [SMS] Settings updated - checking SMS configuration...');
+        
+        final mode = settings.smsMode.toLowerCase().trim();
+        print('📱 [SMS] SMS mode changed to: $mode');
+        print('📱 [SMS] Gateway enabled: ${settings.smsGatewayEnabled}');
+        print('📱 [SMS] Gateway configured: ${settings.isGatewayConfigured}');
+        
+        // Validate current configuration
+        if (mode == 'gateway') {
+          if (!settings.smsGatewayEnabled) {
+            print('⚠️ [SMS] WARNING: Gateway mode selected but gateway is disabled');
+          }
+          if (!settings.isGatewayConfigured) {
+            print('⚠️ [SMS] WARNING: Gateway mode selected but credentials are incomplete');
+          }
+        }
+        
+        // Update SMS availability based on mode and configuration
+        if (mode == 'sim') {
+          // For SIM mode, check permissions
+          _checkSmsPermissions();
+        }
+      });
+      
+      print('✅ [SMS] Settings observer initialized');
+    } catch (e) {
+      print('❌ [SMS] Failed to setup settings observer: $e');
+    }
+  }
+
+  /// Check SMS permissions and update availability
+  Future<void> _checkSmsPermissions() async {
+    try {
+      if (_permissionService != null) {
+        bool granted = await _permissionService!.checkSmsPermission();
+        if (!granted) {
+          granted = await _permissionService!.requestSmsPermission();
+        }
+        isSmsAvailable.value = granted;
+        print('📱 [SMS] Permission check completed: $granted');
+      }
+    } catch (e) {
+      print('❌ [SMS] Permission check failed: $e');
+    }
   }
 
   /// Monitor SMS service health and restart if needed
@@ -510,10 +575,10 @@ class SmsService extends GetxService {
     String message,
   ) async {
     try {
-      print('🔄 _sendDirectSmsInternal called for $phoneNumber');
+      print(' _sendDirectSmsInternal called for $phoneNumber');
 
       if (!Platform.isAndroid) {
-        print('⚠️  Direct SMS sending is only supported on Android');
+        print('  Direct SMS sending is only supported on Android');
         return false;
       }
 
@@ -524,76 +589,103 @@ class SmsService extends GetxService {
         try {
           // First check if we have permission
           permissionGranted = await _permissionService!.checkSmsPermission();
-          print('📋 SMS permission check result: $permissionGranted');
+          print(' SMS permission check result: $permissionGranted');
 
           if (!permissionGranted) {
             // Try requesting permission
-            print('📋 Requesting SMS permission...');
+            print(' Requesting SMS permission...');
             permissionGranted =
                 await _permissionService!.requestSmsPermission();
-            print('📋 SMS permission request result: $permissionGranted');
+            print(' SMS permission request result: $permissionGranted');
           }
 
           isSmsAvailable.value = permissionGranted;
         } catch (e) {
-          print('⚠️  Error checking/requesting SMS permission: $e');
+          print('  Error checking/requesting SMS permission: $e');
           return false;
         }
       } else {
-        print('⚠️  PermissionService not available');
+        print('  PermissionService not available');
         return false;
       }
 
       if (!permissionGranted) {
-        print('❌ SMS permission not granted for $phoneNumber');
+        print(' SMS permission not granted for $phoneNumber');
         return false;
       }
 
-      print('📱 Attempting to send SMS to $phoneNumber...');
+      print(' Attempting to send SMS to $phoneNumber...');
       print(
-        '📝 Message: ${message.substring(0, message.length > 50 ? 50 : message.length)}...',
+        ' Message: ${message.substring(0, message.length > 50 ? 50 : message.length)}...',
       );
 
-      // Try sending with the messenger
+      // Enhanced messenger initialization and sending
       try {
-        final success = await messenger
-            .sendSMS(phoneNumber: phoneNumber, message: message)
-            .timeout(
-              const Duration(seconds: 30),
-              onTimeout: () {
-                print('⏰ SMS sending timed out for $phoneNumber after 30s');
-                return false;
-              },
+        // FlutterBackgroundMessenger is ready to use without explicit initialization
+        print('ð¸ Messenger is ready for sending');
+
+        // Try sending with the messenger with enhanced timeout and retry
+        bool success = false;
+        int attempts = 0;
+        const maxAttempts = 2;
+
+        while (!success && attempts < maxAttempts) {
+          attempts++;
+          print(' Send attempt $attempts/$maxAttempts for $phoneNumber');
+
+          try {
+            success = await messenger
+                .sendSMS(phoneNumber: phoneNumber, message: message)
+                .timeout(
+                  const Duration(seconds: 45), // Increased timeout
+                  onTimeout: () {
+                    print(' SMS sending timed out for $phoneNumber after 45s (attempt $attempts)');
+                    return false;
+                  },
             );
 
+            if (success) {
+              break;
+            }
+          } catch (e) {
+            print(' Attempt $attempts failed: $e');
+            if (attempts < maxAttempts) {
+              print(' Waiting 2 seconds before retry...');
+              await Future.delayed(const Duration(seconds: 2));
+            }
+          }
+        }
+
         if (success) {
-          print('✅ SMS sent successfully to $phoneNumber');
-          print('📋 SMS Details:');
+          print(' SMS sent successfully to $phoneNumber');
+          print(' SMS Details:');
           print('   - Phone: $phoneNumber');
           print('   - Message length: ${message.length} characters');
           print('   - Timestamp: ${DateTime.now().toIso8601String()}');
           print('   - Status: SENT (awaiting delivery)');
           print('');
-          print('💡 DELIVERY NOTES:');
-          print('   • SMS has been sent to the network');
-          print('   • Delivery may take 1-5 minutes');
-          print('   • Check recipient phone for delivery');
-          print('   • Network delays are common');
+          print(' DELIVERY NOTES:');
+          print('   â¢ SMS has been sent to the network');
+          print('   â¢ Delivery may take 1-5 minutes');
+          print('   â¢ Check recipient phone for delivery');
+          print('   â¢ Network delays are common');
           return true;
         } else {
-          print('❌ messenger.sendSMS returned false for $phoneNumber');
-          print('🔧 TROUBLESHOOTING:');
-          print('   • Check phone number format');
-          print('   • Verify SMS permissions');
-          print('   • Try again in a few minutes');
+          print(' All messenger.sendSMS attempts failed for $phoneNumber');
+          print(' TROUBLESHOOTING:');
+          print('   â¢ Check phone number format');
+          print('   â¢ Verify SMS permissions');
+          print('   â¢ Check SIM card and network signal');
+          print('   â¢ Try again in a few minutes');
           return false;
         }
       } catch (e) {
-        print('❌ Exception in messenger.sendSMS for $phoneNumber: $e');
+        print(' Exception in messenger.sendSMS for $phoneNumber: $e');
+        print(' This might be a SIM card or network issue');
         return false;
       }
     } catch (e) {
-      print('❌ Critical error in _sendDirectSmsInternal for $phoneNumber: $e');
+      print(' Critical error in _sendDirectSmsInternal for $phoneNumber: $e');
       return false;
     }
   }
@@ -811,7 +903,7 @@ class SmsService extends GetxService {
   }
 
   /// Main method to use - sends SMS immediately (with validation)
-  /// Uses gateway-first approach with SIM fallback
+  /// Properly observes SMS mode settings and handles configuration errors
   Future<bool> sendSms(String phoneNumber, String message) async {
     try {
       final validatedNumber = validateKenyanPhoneNumber(phoneNumber);
@@ -822,10 +914,91 @@ class SmsService extends GetxService {
         return false;
       }
 
-      print('📱 Sending SMS with gateway-first logic to $validatedNumber...');
-      return await _sendViaGatewayWithFallback(validatedNumber, message);
+      // Get current settings and determine sending method
+      final settings = _settingsService.systemSettings.value;
+      final mode = settings.smsMode.toLowerCase().trim();
+
+      print('📱 [SMS] Current SMS mode: $mode');
+      print('📱 [SMS] Gateway enabled: ${settings.smsGatewayEnabled}');
+      print('📱 [SMS] Gateway configured: ${settings.isGatewayConfigured}');
+
+      // Handle different SMS modes properly
+      if (mode == 'gateway') {
+        // GATEWAY MODE - requires proper configuration
+        if (!settings.smsGatewayEnabled) {
+          print('❌ [SMS] Gateway mode selected but gateway is disabled in settings');
+          Get.snackbar(
+            'SMS Gateway Disabled',
+            'Gateway SMS mode is selected but gateway is disabled. '
+                'Please enable gateway in Settings or switch to SIM Card mode.',
+            backgroundColor: Colors.red,
+            colorText: Colors.white,
+            duration: const Duration(seconds: 5),
+            snackPosition: SnackPosition.BOTTOM,
+          );
+          return false;
+        }
+
+        if (!settings.isGatewayConfigured) {
+          print('❌ [SMS] Gateway mode selected but credentials are missing');
+          Get.snackbar(
+            'SMS Gateway Not Configured',
+            'Gateway SMS mode is active but credentials are incomplete. '
+                'Go to Settings → System Settings → SMS Configuration to '
+                'add your gateway credentials, or switch to SIM Card mode.',
+            backgroundColor: Colors.red,
+            colorText: Colors.white,
+            duration: const Duration(seconds: 7),
+            snackPosition: SnackPosition.BOTTOM,
+          );
+          return false;
+        }
+
+        print('📡 [SMS] GATEWAY MODE → sending to $validatedNumber');
+        bool gatewaySuccess = false;
+        try {
+          gatewaySuccess = await sendSmsViaGateway(validatedNumber, message);
+        } catch (e) {
+          print('❌ [SMS] Gateway exception: $e');
+        }
+
+        if (gatewaySuccess) {
+          print('✅ [SMS] Gateway delivery succeeded');
+          return true;
+        }
+
+        // Gateway failed - try SIM fallback if enabled
+        if (settings.smsGatewayFallbackToSim) {
+          print('📱 [SMS] Gateway failed → SIM fallback...');
+          final simResult = await _sendDirectSmsInternal(validatedNumber, message);
+          if (simResult) {
+            print('✅ [SMS] SIM fallback succeeded');
+            return true;
+          } else {
+            print('❌ [SMS] SIM fallback also failed');
+          }
+        }
+
+        print('❌ [SMS] Gateway failed and no successful fallback');
+        Get.snackbar(
+          'SMS Failed',
+          'Could not send via SMS Gateway. '
+              'Check your gateway credentials or enable SIM fallback.',
+          backgroundColor: Colors.orange,
+          colorText: Colors.white,
+          duration: const Duration(seconds: 5),
+          snackPosition: SnackPosition.BOTTOM,
+        );
+        return false;
+
+      } else {
+        // SIM CARD MODE (default and fallback)
+        print('📱 [SMS] SIM CARD MODE → sending to $validatedNumber');
+        return await _sendDirectSmsInternal(validatedNumber, message);
+      }
+
     } catch (e) {
-      print('Error in sendSms: $e');
+      print('❌ [SMS] sendSms error: $e');
       return false;
     }
   }
@@ -895,8 +1068,8 @@ class SmsService extends GetxService {
             // Create a completer to handle the async operation with timeout
             final completer = Completer<bool>();
 
-            // Start the SMS sending operation using gateway-first approach
-            _sendViaGatewayWithFallback(validatedNumber, message)
+            // Start the SMS sending operation using proper mode handling
+            sendSms(validatedNumber, message)
                 .then((result) {
                   if (!completer.isCompleted) {
                     completer.complete(result);
@@ -1099,13 +1272,11 @@ Served By:${collection.userName ?? 'N/A'}''';
 
       print('📝 [COFFEE SMS] Message prepared (${message.length} chars)');
 
-      // Send SMS using gateway-first priority system with enhanced error handling
-      print('📤 [COFFEE SMS] Sending SMS via gateway-first priority system...');
-      final success = await sendSmsRobust(
+      // Send SMS using current mode settings with proper error handling
+      print('📤 [COFFEE SMS] Sending SMS using current mode settings...');
+      final success = await sendSms(
         validatedNumber,
         message,
-        maxRetries: 3,
-        priority: 2, // High priority for coffee collection notifications
       );
 
       if (success) {
@@ -1234,15 +1405,13 @@ Served By:${sale.userName ?? 'N/A'}''';
 
       print('📝 [INVENTORY SMS] Message prepared (${message.length} chars)');
 
-      // Send SMS using gateway-first priority system
+      // Send SMS using current mode settings
       print(
-        '📤 [INVENTORY SMS] Sending SMS via gateway-first priority system...',
+        '📤 [INVENTORY SMS] Sending SMS using current mode settings...',
       );
-      final success = await sendSmsRobust(
+      final success = await sendSms(
         validatedNumber,
         message,
-        maxRetries: 2,
-        priority: 2, // High priority for sales notifications
       );
 
       if (success) {
