@@ -6,6 +6,7 @@ plugins {
 }
 
 android {
+    
     namespace = "com.codejar.farm_pro"
     compileSdk = flutter.compileSdkVersion
     ndkVersion = "27.0.12077973"

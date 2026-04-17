@@ -23,725 +23,244 @@ class SmsService extends GetxService {
   final FlutterBackgroundMessenger messenger = FlutterBackgroundMessenger();
   final RxBool isSmsAvailable = false.obs;
 
-  // SMS queue for backward compatibility (deprecated - now sending immediately)
-  final List<SmsQueueItem> _smsQueue = [];
-  Timer? _queueProcessor;
-  bool _isProcessingQueue = false;
-
-  // SMS gateway configuration is now loaded from SystemSettings via SettingsService
-
   // SMS statistics
   final RxInt totalSmsSent = 0.obs;
   final RxInt totalSmsFailed = 0.obs;
   final RxInt smsQueueSize = 0.obs;
 
-  Future<SmsService> init() async {
-    print('ðŸ’» Initializing SMS Service...');
+  // Legacy queue (kept for compatibility)
+  final List<SmsQueueItem> _smsQueue = [];
+  Timer? _queueProcessor;
+  bool _isProcessingQueue = false;
 
-    // Initialize PermissionService with fallback
+  // ── Current mode (reactive so UI can observe) ──────────────────────────────
+  final RxString currentSmsMode = 'sim'.obs;
+
+  Future<SmsService> init() async {
+    print('📱 [SMS] Initializing SMS Service...');
+
     try {
       _permissionService = Get.find<PermissionService>();
-      print('âœ¨ PermissionService found and initialized');
     } catch (e) {
-      print('Warning: PermissionService not found, continuing without it: $e');
-      // Continue without permission service - it will be null
+      print('⚠️  [SMS] PermissionService not found: $e');
     }
 
-    // Initialize messenger (FlutterBackgroundMessenger doesn't have explicit init method)
-    try {
-      print('ð¸ SMS messenger ready for use');
-      // FlutterBackgroundMessenger is ready to use without explicit initialization
-    } catch (e) {
-      print('â ï¸ SMS messenger setup failed: $e');
-      print('ð¸ Will attempt to initialize during sending');
+    // ── Read persisted SMS mode from settings ──────────────────────────────
+    final settings = _settingsService.systemSettings.value;
+    currentSmsMode.value = _resolveMode(settings);
+    print('📱 [SMS] Loaded SMS mode from settings: ${currentSmsMode.value}');
+
+    // ── Request SIM permissions if mode is SIM ─────────────────────────────
+    if (currentSmsMode.value == 'sim') {
+      await _initSimPermissions();
     }
 
-    // Check if SMS is available on this device
-    if (Platform.isAndroid) {
-      try {
-        print('ð¸ Running on Android, checking SMS capabilities...');
+    // ── React to future settings changes (immediate propagation) ───────────
+    ever(_settingsService.systemSettings, _onSettingsChanged);
 
-        // Check SMS permissions using permission service
-        bool granted = false;
-        if (_permissionService != null) {
-          // First check current permission status to avoid unnecessary prompts
-          granted = await _permissionService!.checkSmsPermission();
-
-          // If not granted, request permission once
-          if (!granted) {
-            print('ð¸ SMS permission not yet granted â€” requesting now');
-            granted = await _permissionService!.requestSmsPermission();
-          } else {
-            print('âœ¨ SMS permission already granted (persisted)');
-          }
-
-          print('ð¸ Final SMS permission result: $granted');
-        } else {
-          print('â˜ ï¸ No PermissionService available for SMS permission check');
-        }
-
-        isSmsAvailable.value = granted;
-
-        if (isSmsAvailable.value) {
-          print('âœ¨ SMS permissions granted - SMS service active');
-
-          // Test if the messenger is properly initialized
-          try {
-            print('ð¸ Testing SMS messenger readiness...');
-            // FlutterBackgroundMessenger doesn't have isInitialized property
-            // It's ready to use as long as we have permissions
-            print('â SMS messenger is ready for use');
-          } catch (e) {
-            print('â ï¸ SMS messenger test failed: $e');
-          }
-        } else {
-          print('â˜ ï¸ SMS permissions not granted - will continue attempting');
-        }
-      } catch (e) {
-        print('Error requesting SMS permission: $e');
-      }
-    } else {
-      print('â˜ ï¸ Not running on Android - SMS not supported');
-      isSmsAvailable.value = false;
-    }
-
-    // Start SMS queue processor with auto-restart capability (for legacy queue items)
     _startQueueProcessor();
     _startHealthMonitor();
 
-    // Observe settings changes to react to SMS mode changes
-    _setupSettingsObserver();
-
-    print('âœ¨ SMS Service initialization complete');
+    print('✅ [SMS] SMS Service ready (mode: ${currentSmsMode.value})');
     return this;
   }
 
-  /// Setup observer for SMS settings changes
-  void _setupSettingsObserver() {
-    try {
-      // Listen to system settings changes
-      ever(_settingsService.systemSettings, (SystemSettings settings) {
-        print('🔄 [SMS] Settings updated - checking SMS configuration...');
-        
-        final mode = settings.smsMode.toLowerCase().trim();
-        print('📱 [SMS] SMS mode changed to: $mode');
-        print('📱 [SMS] Gateway enabled: ${settings.smsGatewayEnabled}');
-        print('📱 [SMS] Gateway configured: ${settings.isGatewayConfigured}');
-        
-        // Validate current configuration
-        if (mode == 'gateway') {
-          if (!settings.smsGatewayEnabled) {
-            print('⚠️ [SMS] WARNING: Gateway mode selected but gateway is disabled');
-          }
-          if (!settings.isGatewayConfigured) {
-            print('⚠️ [SMS] WARNING: Gateway mode selected but credentials are incomplete');
-          }
-        }
-        
-        // Update SMS availability based on mode and configuration
-        if (mode == 'sim') {
-          // For SIM mode, check permissions
-          _checkSmsPermissions();
-        }
-      });
-      
-      print('✅ [SMS] Settings observer initialized');
-    } catch (e) {
-      print('❌ [SMS] Failed to setup settings observer: $e');
+  // ── Settings change handler ────────────────────────────────────────────────
+  void _onSettingsChanged(SystemSettings settings) {
+    final newMode = _resolveMode(settings);
+    if (newMode != currentSmsMode.value) {
+      print('🔄 [SMS] Mode changed: ${currentSmsMode.value} → $newMode');
+      currentSmsMode.value = newMode;
+
+      if (newMode == 'sim') {
+        // Re-init SIM permissions when switching to SIM
+        _initSimPermissions();
+      }
     }
   }
 
-  /// Check SMS permissions and update availability
-  Future<void> _checkSmsPermissions() async {
+  /// Determine effective SMS mode. Gateway mode requires credentials.
+  String _resolveMode(SystemSettings settings) {
+    final raw = (settings.smsMode).toLowerCase().trim();
+    if (raw == 'gateway') {
+      // Validate gateway is actually usable
+      if (settings.isGatewayConfigured) return 'gateway';
+      // Fall back to SIM if gateway is selected but not configured
+      print(
+        '⚠️  [SMS] Gateway selected but not configured — falling back to SIM mode',
+      );
+      return 'sim';
+    }
+    return 'sim';
+  }
+
+  // ── SIM permission initialisation ─────────────────────────────────────────
+  Future<void> _initSimPermissions() async {
+    if (!Platform.isAndroid) {
+      isSmsAvailable.value = false;
+      return;
+    }
     try {
+      bool granted = false;
       if (_permissionService != null) {
-        bool granted = await _permissionService!.checkSmsPermission();
+        granted = await _permissionService!.checkSmsPermission();
         if (!granted) {
           granted = await _permissionService!.requestSmsPermission();
         }
-        isSmsAvailable.value = granted;
-        print('📱 [SMS] Permission check completed: $granted');
       }
+      isSmsAvailable.value = granted;
+      print(
+        '📱 [SMS] SIM permission status: ${granted ? "GRANTED" : "DENIED"}',
+      );
     } catch (e) {
-      print('❌ [SMS] Permission check failed: $e');
-    }
-  }
-
-  /// Monitor SMS service health and restart if needed
-  void _startHealthMonitor() {
-    Timer.periodic(const Duration(minutes: 5), (timer) {
-      try {
-        // Check if queue processor is still running
-        if (_queueProcessor == null || !_queueProcessor!.isActive) {
-          print('🔧 SMS queue processor not active - restarting...');
-          _startQueueProcessor();
-        }
-
-        // Attempt to get permissions if not available but we have pending SMS
-        if (!isSmsAvailable.value &&
-            _smsQueue.isNotEmpty &&
-            Platform.isAndroid) {
-          print(
-            '🔧 SMS permissions not available but queue has items - checking permissions...',
-          );
-          _checkPermissionsQuietly();
-        }
-
-        print(
-          '📊 SMS Health Check: Queue size: ${_smsQueue.length}, Sent: ${totalSmsSent.value}, Failed: ${totalSmsFailed.value}',
-        );
-      } catch (e) {
-        print('Error in SMS health monitor: $e');
-      }
-    });
-  }
-
-  /// Quietly check SMS permissions without showing dialogs
-  Future<void> _checkPermissionsQuietly() async {
-    try {
-      if (_permissionService != null) {
-        final granted = await _permissionService!.checkSmsPermission();
-        if (granted && !isSmsAvailable.value) {
-          isSmsAvailable.value = true;
-          print('✅ SMS permissions restored');
-        }
-      }
-    } catch (e) {
-      print('Error checking SMS permissions quietly: $e');
-    }
-  }
-
-  /// Initialize SMS service for use (alias for init method)
-  Future<void> initializeSmsService() async {
-    try {
-      await init();
-      print('SMS service initialized successfully');
-    } catch (e) {
-      print('Error initializing SMS service: $e');
-    }
-  }
-
-  /// Check SMS permission (convenience method)
-  Future<bool> checkSmsPermission() async {
-    try {
-      if (_permissionService == null) {
-        print('⚠️  PermissionService not available for SMS permission check');
-        return false;
-      }
-      return await _permissionService!.checkSmsPermission();
-    } catch (e) {
-      print('Error checking SMS permission: $e');
-      return false;
+      print('❌ [SMS] Error initialising SIM permissions: $e');
     }
   }
 
   @override
   void onClose() {
-    print('🔴 SMS Service shutting down...');
     _queueProcessor?.cancel();
     super.onClose();
   }
 
-  /// Force restart SMS service if it has stopped
-  Future<void> forceRestart() async {
-    try {
-      print('🔄 Force restarting SMS service...');
-      _queueProcessor?.cancel();
-      await Future.delayed(const Duration(milliseconds: 500));
-      await init();
-      print('✅ SMS service restarted successfully');
-    } catch (e) {
-      print('❌ Error restarting SMS service: $e');
-    }
-  }
+  // ─────────────────────────────────────────────────────────────────────────
+  // PHONE VALIDATION
+  // ─────────────────────────────────────────────────────────────────────────
 
-  /// Enhanced Kenyan phone number validation supporting all formats
-  /// Accepts formats: +254XXXXXXXXX, 254XXXXXXXXX, 07XXXXXXXX, 01XXXXXXXX, etc.
-  /// Returns: Formatted +254 number or null if invalid
   String? validateKenyanPhoneNumber(String phoneNumber) {
     try {
-      print('📞 Validating phone number: "$phoneNumber"');
-
-      // Remove all spaces, dashes, parentheses, and other non-digit characters except +
       String cleaned = phoneNumber.replaceAll(RegExp(r'[\s\-\(\)\.\,]'), '');
-      print('📞 After cleaning: "$cleaned"');
-
-      // Handle different input formats
       String processedNumber = '';
 
       if (cleaned.startsWith('+254')) {
-        // Format: +254XXXXXXXXX
         processedNumber = cleaned.substring(4);
-        print('📞 Detected +254 format, extracted: "$processedNumber"');
       } else if (cleaned.startsWith('254')) {
-        // Format: 254XXXXXXXXX
         processedNumber = cleaned.substring(3);
-        print('📞 Detected 254 format, extracted: "$processedNumber"');
       } else if (cleaned.startsWith('0')) {
-        // Format: 07XXXXXXXX, 01XXXXXXXX, etc.
         processedNumber = cleaned.substring(1);
-        print('📞 Detected 0X format, extracted: "$processedNumber"');
       } else if (cleaned.length == 9 && cleaned.startsWith(RegExp(r'[17]'))) {
-        // Format: 7XXXXXXXX, 1XXXXXXXX (direct mobile without leading 0)
         processedNumber = cleaned;
-        print('📞 Detected direct mobile format: "$processedNumber"');
       } else {
-        print('❌ Phone number format not recognized: "$cleaned"');
         return null;
       }
 
-      // Validate processed number length
-      if (processedNumber.length != 9) {
-        print(
-          '❌ Invalid length after processing: ${processedNumber.length} (expected 9)',
-        );
-        return null;
+      if (processedNumber.length != 9) return null;
+      if (!RegExp(r'^\d+$').hasMatch(processedNumber)) return null;
+
+      // Valid Kenyan mobile prefixes
+      final validPrefixes = [
+        '70', '71', '72', '73', '74', '75', '76', '77', '78', '79',
+        '10', '11', '12', '13', '14', '15', '16', '17', '18', '19',
+        '20', // Nairobi landline (optional)
+      ];
+
+      final prefix = processedNumber.substring(0, 2);
+      if (validPrefixes.any((p) => prefix.startsWith(p[0]) || prefix == p)) {
+        return '+254$processedNumber';
       }
 
-      // Validate that it contains only digits
-      if (!RegExp(r'^\d+$').hasMatch(processedNumber)) {
-        print('❌ Contains non-digit characters: "$processedNumber"');
-        return null;
+      // Accept any 9-digit number starting with valid Kenyan digits
+      if (RegExp(r'^[0-9]{9}$').hasMatch(processedNumber)) {
+        return '+254$processedNumber';
       }
 
-      // Enhanced mobile prefixes for all Kenyan networks
-      final mobileNetworks = {
-        // Safaricom mobile prefixes
-        'Safaricom': [
-          '70',
-          '71',
-          '72',
-          '73',
-          '74',
-          '75',
-          '76',
-          '77',
-          '78',
-          '79',
-        ],
-        // Airtel mobile prefixes
-        'Airtel': [
-          '73',
-          '78',
-          '10',
-          '11',
-          '12',
-          '13',
-          '14',
-          '15',
-          '16',
-          '17',
-          '18',
-          '19',
-        ],
-        // Telkom mobile prefixes
-        'Telkom': ['77', '76'],
-        // Equitel mobile prefixes
-        'Equitel': ['76'],
-      };
-
-      // Check if it's a valid mobile number
-      String prefix = processedNumber.substring(0, 2);
-      String networkName = '';
-      bool isMobile = false;
-
-      for (String network in mobileNetworks.keys) {
-        if (mobileNetworks[network]!.contains(prefix)) {
-          networkName = network;
-          isMobile = true;
-          break;
-        }
-      }
-
-      if (isMobile) {
-        String formattedNumber = '+254$processedNumber';
-        print('✅ Valid $networkName mobile number: $formattedNumber');
-        return formattedNumber;
-      }
-
-      // Check for landline numbers (various city codes)
-      final landlineAreas = {
-        'Nairobi': ['20'],
-        'Mombasa': ['41'],
-        'Nakuru': ['51'],
-        'Eldoret': ['53'],
-        'Kisumu': ['57'],
-        'Nyeri': ['61'],
-        'Meru': ['64'],
-        'Embu': ['68'],
-        'Kitale': ['54'],
-        'Kakamega': ['56'],
-        'Kericho': ['52'],
-        'Malindi': ['42'],
-        'Lamu': ['42'],
-        'Garissa': ['46'],
-        'Wajir': ['46'],
-        'Mandera': ['46'],
-        'Lodwar': ['54'],
-        'Marsabit': ['69'],
-        'Isiolo': ['65'],
-        'Maralal': ['65'],
-        'Kapenguria': ['54'],
-        'Bungoma': ['55'],
-        'Webuye': ['55'],
-        'Busia': ['55'],
-        'Siaya': ['57'],
-        'Kisii': ['58'],
-        'Nyamira': ['58'],
-        'Migori': ['59'],
-        'Homa Bay': ['59'],
-        'Machakos': ['44'],
-        'Kitui': ['44'],
-        'Makueni': ['44'],
-        'Kajiado': ['45'],
-        'Narok': ['50'],
-        'Bomet': ['52'],
-        'Kapsabet': ['53'],
-        'Kapsowar': ['53'],
-        'Marigat': ['53'],
-        'Kabarnet': ['53'],
-        'Molo': ['51'],
-        'Naivasha': ['50'],
-        'Gilgil': ['50'],
-        'Nanyuki': ['62'],
-        'Isinya': ['45'],
-        'Namanga': ['45'],
-        'Taveta': ['43'],
-        'Voi': ['43'],
-        'Makindu': ['44'],
-      };
-
-      // Check if it's a valid landline (8 or 9 digits for landlines)
-      if (processedNumber.length >= 8) {
-        for (String area in landlineAreas.keys) {
-          for (String areaCode in landlineAreas[area]!) {
-            if (processedNumber.startsWith(areaCode)) {
-              String formattedNumber = '+254$processedNumber';
-              print('✅ Valid $area landline number: $formattedNumber');
-              return formattedNumber;
-            }
-          }
-        }
-      }
-
-      print(
-        '❌ Not a valid Kenyan mobile or landline number. Prefix: "$prefix"',
-      );
-      print('❌ Processed number: "$processedNumber"');
       return null;
     } catch (e) {
-      print('❌ Error validating phone number "$phoneNumber": $e');
       return null;
     }
   }
 
-  /// Adds SMS to queue for robust sending with enhanced validation
-  /// NOTE: This method is deprecated - use sendSmsRobust() for immediate sending instead
-  void queueSms(
-    String phoneNumber,
-    String message, {
-    int maxRetries = 3,
-    int priority = 1,
-  }) {
+  // ─────────────────────────────────────────────────────────────────────────
+  // MAIN SEND ENTRY POINT
+  // Always use this — it reads the current mode and routes accordingly.
+  // ─────────────────────────────────────────────────────────────────────────
+
+  /// Send SMS using the currently configured mode.
+  /// Returns true on success, false on failure.
+  Future<bool> sendSms(String phoneNumber, String message) async {
+    final validated = validateKenyanPhoneNumber(phoneNumber);
+    if (validated == null) {
+      print('❌ [SMS] Invalid phone number: $phoneNumber');
+      return false;
+    }
+
+    // Re-read live settings so we always use the latest mode
+    final settings = _settingsService.systemSettings.value;
+    final mode = _resolveMode(settings);
+
+    print('📱 [SMS] Sending to $validated — mode: $mode');
+
+    if (mode == 'gateway') {
+      return await _sendGateway(validated, message, settings);
+    } else {
+      return await _sendSim(validated, message);
+    }
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // GATEWAY SEND
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<bool> _sendGateway(
+    String phone,
+    String message,
+    SystemSettings settings,
+  ) async {
+    if (!settings.isGatewayConfigured) {
+      _showGatewayNotConfiguredError();
+      return false;
+    }
+
+    print('📡 [SMS] Attempting gateway send to $phone');
+
     try {
-      final validatedNumber = validateKenyanPhoneNumber(phoneNumber);
-      if (validatedNumber == null) {
-        print(
-          '❌ Invalid Kenyan phone number: $phoneNumber - Phone validation failed',
-        );
-        totalSmsFailed.value++;
-        return;
+      final success = await sendSmsViaGateway(phone, message);
+      if (success) {
+        print('✅ [SMS] Gateway send succeeded');
+        return true;
       }
 
-      // Check for duplicate SMS in queue to avoid spam
-      final existingIndex = _smsQueue.indexWhere(
-        (item) =>
-            item.phoneNumber == validatedNumber &&
-            item.message.trim() == message.trim(),
-      );
-
-      if (existingIndex != -1) {
-        print(
-          '📋 SMS already queued for $validatedNumber - skipping duplicate',
-        );
-        return;
+      // Fallback to SIM if enabled
+      if (settings.smsGatewayFallbackToSim) {
+        print('📱 [SMS] Gateway failed — trying SIM fallback');
+        return await _sendSim(phone, message);
       }
 
-      final smsItem = SmsQueueItem(
-        phoneNumber: validatedNumber,
-        message: message,
-        maxRetries: maxRetries,
-        priority: priority,
-        createdAt: DateTime.now(),
-      );
-
-      _smsQueue.add(smsItem);
-      _smsQueue.sort(
-        (a, b) => b.priority.compareTo(a.priority),
-      ); // Higher priority first
-      smsQueueSize.value = _smsQueue.length;
-
-      print(
-        '📤 SMS queued for $validatedNumber (Priority: $priority, Queue size: ${_smsQueue.length})',
-      );
-
-      // Force immediate processing for high priority SMS
-      if (priority >= 3 && !_isProcessingQueue) {
-        print('🚀 High priority SMS - triggering immediate processing');
-        _processNextSmsInQueue();
-      }
+      print('❌ [SMS] Gateway failed, no fallback configured');
+      return false;
     } catch (e) {
-      print('❌ Error queuing SMS: $e');
-      totalSmsFailed.value++;
+      print('❌ [SMS] Gateway exception: $e');
+      if (settings.smsGatewayFallbackToSim) {
+        return await _sendSim(phone, message);
+      }
+      return false;
     }
   }
 
-  /// Starts the SMS queue processor with robust error handling
-  void _startQueueProcessor() {
-    _queueProcessor?.cancel(); // Cancel any existing timer
-    _queueProcessor = Timer.periodic(const Duration(seconds: 2), (timer) {
-      try {
-        if (!_isProcessingQueue && _smsQueue.isNotEmpty) {
-          _processNextSmsInQueue().catchError((error) {
-            print('Error in queue processor: $error');
-            // Don't terminate the queue processor - continue processing
-            _isProcessingQueue = false;
-          });
-        }
-      } catch (e) {
-        print('Critical error in SMS queue processor: $e');
-        // Reset processing flag to prevent deadlock
-        _isProcessingQueue = false;
-      }
-    });
-    print(
-      'SMS queue processor started - will run continuously while app is active',
+  void _showGatewayNotConfiguredError() {
+    Get.snackbar(
+      'SMS Gateway Not Configured',
+      'Gateway mode is selected but credentials are incomplete.\n'
+          'Go to Settings → System Settings → SMS Configuration to add credentials,\n'
+          'or switch to SIM Card mode.',
+      backgroundColor: Colors.red.shade700,
+      colorText: Colors.white,
+      duration: const Duration(seconds: 6),
+      snackPosition: SnackPosition.BOTTOM,
+      margin: const EdgeInsets.all(12),
+      icon: const Icon(Icons.sms_failed, color: Colors.white),
     );
   }
 
-  /// Processes the next SMS in the queue
-  Future<void> _processNextSmsInQueue() async {
-    if (_isProcessingQueue || _smsQueue.isEmpty) return;
-
-    _isProcessingQueue = true;
-
-    try {
-      final smsItem = _smsQueue.removeAt(0);
-      smsQueueSize.value = _smsQueue.length;
-
-      print(
-        'Processing SMS to ${smsItem.phoneNumber} (Attempt ${smsItem.attempts + 1}/${smsItem.maxRetries})',
-      );
-
-      final success = await _sendDirectSmsInternal(
-        smsItem.phoneNumber,
-        smsItem.message,
-      );
-
-      if (success) {
-        totalSmsSent.value++;
-        print('SMS sent successfully to ${smsItem.phoneNumber}');
-      } else {
-        smsItem.attempts++;
-        if (smsItem.attempts < smsItem.maxRetries) {
-          // Re-queue for retry with delay
-          smsItem.lastAttempt = DateTime.now();
-          _smsQueue.add(smsItem);
-          smsQueueSize.value = _smsQueue.length;
-          print(
-            'SMS failed, re-queued for retry. Attempt ${smsItem.attempts}/${smsItem.maxRetries}',
-          );
-        } else {
-          totalSmsFailed.value++;
-          print(
-            'SMS failed permanently after ${smsItem.maxRetries} attempts to ${smsItem.phoneNumber}',
-          );
-        }
-      }
-    } catch (e) {
-      print('Error processing SMS queue: $e');
-      totalSmsFailed.value++;
-    } finally {
-      _isProcessingQueue = false;
-
-      // Add a small delay between SMS sends to avoid overwhelming the system
-      await Future.delayed(const Duration(milliseconds: 500));
-    }
-  }
-
-  /// Internal method to send SMS directly with enhanced error handling
-  Future<bool> _sendDirectSmsInternal(
-    String phoneNumber,
-    String message,
-  ) async {
-    try {
-      print(' _sendDirectSmsInternal called for $phoneNumber');
-
-      if (!Platform.isAndroid) {
-        print('  Direct SMS sending is only supported on Android');
-        return false;
-      }
-
-      // Always check permissions fresh for each send attempt
-      bool permissionGranted = false;
-
-      if (_permissionService != null) {
-        try {
-          // First check if we have permission
-          permissionGranted = await _permissionService!.checkSmsPermission();
-          print(' SMS permission check result: $permissionGranted');
-
-          if (!permissionGranted) {
-            // Try requesting permission
-            print(' Requesting SMS permission...');
-            permissionGranted =
-                await _permissionService!.requestSmsPermission();
-            print(' SMS permission request result: $permissionGranted');
-          }
-
-          isSmsAvailable.value = permissionGranted;
-        } catch (e) {
-          print('  Error checking/requesting SMS permission: $e');
-          return false;
-        }
-      } else {
-        print('  PermissionService not available');
-        return false;
-      }
-
-      if (!permissionGranted) {
-        print(' SMS permission not granted for $phoneNumber');
-        return false;
-      }
-
-      print(' Attempting to send SMS to $phoneNumber...');
-      print(
-        ' Message: ${message.substring(0, message.length > 50 ? 50 : message.length)}...',
-      );
-
-      // Enhanced messenger initialization and sending
-      try {
-        // FlutterBackgroundMessenger is ready to use without explicit initialization
-        print('ð¸ Messenger is ready for sending');
-
-        // Try sending with the messenger with enhanced timeout and retry
-        bool success = false;
-        int attempts = 0;
-        const maxAttempts = 2;
-
-        while (!success && attempts < maxAttempts) {
-          attempts++;
-          print(' Send attempt $attempts/$maxAttempts for $phoneNumber');
-
-          try {
-            success = await messenger
-                .sendSMS(phoneNumber: phoneNumber, message: message)
-                .timeout(
-                  const Duration(seconds: 45), // Increased timeout
-                  onTimeout: () {
-                    print(' SMS sending timed out for $phoneNumber after 45s (attempt $attempts)');
-                    return false;
-                  },
-            );
-
-            if (success) {
-              break;
-            }
-          } catch (e) {
-            print(' Attempt $attempts failed: $e');
-            if (attempts < maxAttempts) {
-              print(' Waiting 2 seconds before retry...');
-              await Future.delayed(const Duration(seconds: 2));
-            }
-          }
-        }
-
-        if (success) {
-          print(' SMS sent successfully to $phoneNumber');
-          print(' SMS Details:');
-          print('   - Phone: $phoneNumber');
-          print('   - Message length: ${message.length} characters');
-          print('   - Timestamp: ${DateTime.now().toIso8601String()}');
-          print('   - Status: SENT (awaiting delivery)');
-          print('');
-          print(' DELIVERY NOTES:');
-          print('   â¢ SMS has been sent to the network');
-          print('   â¢ Delivery may take 1-5 minutes');
-          print('   â¢ Check recipient phone for delivery');
-          print('   â¢ Network delays are common');
-          return true;
-        } else {
-          print(' All messenger.sendSMS attempts failed for $phoneNumber');
-          print(' TROUBLESHOOTING:');
-          print('   â¢ Check phone number format');
-          print('   â¢ Verify SMS permissions');
-          print('   â¢ Check SIM card and network signal');
-          print('   â¢ Try again in a few minutes');
-          return false;
-        }
-      } catch (e) {
-        print(' Exception in messenger.sendSMS for $phoneNumber: $e');
-        print(' This might be a SIM card or network issue');
-        return false;
-      }
-    } catch (e) {
-      print(' Critical error in _sendDirectSmsInternal for $phoneNumber: $e');
-      return false;
-    }
-  }
-
-  /// Direct programmatic SMS sending for Android
-  Future<bool> sendDirectSms(String phoneNumber, String message) async {
-    try {
-      final validatedNumber = validateKenyanPhoneNumber(phoneNumber);
-      if (validatedNumber == null) {
-        print('Invalid Kenyan phone number: $phoneNumber');
-        return false;
-      }
-
-      return await _sendDirectSmsInternal(validatedNumber, message);
-    } catch (e) {
-      print('Error in sendDirectSms method: $e');
-      return false;
-    }
-  }
-
-  /// SMS via Zettatel SMS gateway API
   Future<bool> sendSmsViaGateway(String phoneNumber, String message) async {
     try {
-      final validatedNumber = validateKenyanPhoneNumber(phoneNumber);
-      if (validatedNumber == null) {
-        print(
-          'Invalid Kenyan phone number for SMS gateway: $phoneNumber - Failed validation',
-        );
-        return false;
-      }
+      final settings = _settingsService.systemSettings.value;
+      if (!settings.isGatewayConfigured) return false;
 
-      // Get SMS gateway configuration from settings
-      final settingsService = Get.find<SettingsService>();
-      final settings = settingsService.systemSettings.value;
+      // Strip leading + for Zettatel
+      final formattedPhone =
+          phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
 
-      // Check if gateway is enabled and configured
-      if (!settings.smsGatewayEnabled) {
-        print('SMS gateway is disabled in settings');
-        return false;
-      }
-
-      if (settings.smsGatewayUsername.isEmpty ||
-          settings.smsGatewayPassword.isEmpty) {
-        print('SMS gateway not properly configured - missing credentials');
-        return false;
-      }
-
-      print('Sending SMS via Zettatel gateway to $validatedNumber');
-
-      // Format phone number for Zettatel (remove + prefix)
-      String formattedPhone =
-          validatedNumber.startsWith('+')
-              ? validatedNumber.substring(1)
-              : validatedNumber;
-
-      // Create URL-encoded form data as per Zettatel API specification
       final formData = {
         'userid': settings.smsGatewayUsername,
         'password': settings.smsGatewayPassword,
@@ -754,20 +273,13 @@ class SmsService extends GetxService {
         'output': 'json',
       };
 
-      // Convert to URL-encoded string
-      final encodedData = formData.entries
+      final body = formData.entries
           .map(
             (e) =>
                 '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}',
           )
           .join('&');
 
-      print('📤 Sending to Zettatel API: ${settings.smsGatewayUrl}');
-      print(
-        '📱 Phone: $formattedPhone, Sender: ${settings.smsGatewaySenderId}',
-      );
-
-      // Send request to Zettatel API
       final response = await http
           .post(
             Uri.parse(settings.smsGatewayUrl),
@@ -776,975 +288,391 @@ class SmsService extends GetxService {
               'cache-control': 'no-cache',
               'content-type': 'application/x-www-form-urlencoded',
             },
-            body: encodedData,
+            body: body,
           )
           .timeout(const Duration(seconds: 30));
 
-      print('📋 Gateway response status: ${response.statusCode}');
-      print('📋 Gateway response body: ${response.body}');
+      print(
+        '📋 [SMS] Gateway response ${response.statusCode}: ${response.body}',
+      );
 
       if (response.statusCode == 200) {
-        // Parse JSON response to check for success
         try {
-          final responseData = jsonDecode(response.body);
-
-          // Zettatel typically returns success status in the response
-          if (responseData is Map &&
-              (responseData['status'] == 'success' ||
-                  responseData['Status'] == 'success' ||
-                  responseData.containsKey('MessageId') ||
-                  responseData.containsKey('messageid'))) {
-            print('✅ SMS sent successfully via Zettatel gateway');
-            return true;
-          } else {
-            print('❌ Gateway returned error: $responseData');
-            return false;
-          }
-        } catch (e) {
-          // If JSON parsing fails, check if response contains success indicators
-          final responseText = response.body.toLowerCase();
-          if (responseText.contains('success') ||
-              responseText.contains('sent')) {
-            print(
-              '✅ SMS sent successfully via Zettatel gateway (text response)',
+          final data = jsonDecode(response.body);
+          if (data is Map) {
+            final status =
+                (data['status'] ?? data['Status'] ?? '')
+                    .toString()
+                    .toLowerCase();
+            if (status == 'success' ||
+                data.containsKey('MessageId') ||
+                data.containsKey('messageid')) {
+              return true;
+            }
+            // Show gateway error details to the user
+            final errorMsg =
+                data['reason'] ??
+                data['message'] ??
+                data['error'] ??
+                response.body;
+            Get.snackbar(
+              'Gateway Error',
+              'SMS gateway returned: $errorMsg',
+              backgroundColor: Colors.orange,
+              colorText: Colors.white,
+              snackPosition: SnackPosition.BOTTOM,
             );
-            return true;
-          } else {
-            print('❌ Gateway response parsing failed: $e');
-            print('❌ Response body: ${response.body}');
             return false;
           }
+        } catch (_) {
+          final body = response.body.toLowerCase();
+          return body.contains('success') || body.contains('sent');
         }
-      } else {
-        print(
-          '❌ Failed to send SMS via Zettatel gateway: HTTP ${response.statusCode}',
-        );
-        print('❌ Response: ${response.body}');
-        return false;
       }
+
+      Get.snackbar(
+        'Gateway HTTP Error',
+        'SMS gateway returned HTTP ${response.statusCode}. Check your gateway URL.',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return false;
     } catch (e) {
-      print('❌ Error sending SMS via Zettatel gateway: $e');
+      print('❌ [SMS] Gateway exception: $e');
       return false;
     }
   }
 
-  Future<bool> _sendViaGatewayWithFallback(
-    String phoneNumber,
-    String message,
-  ) async {
+  // ─────────────────────────────────────────────────────────────────────────
+  // SIM SEND
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<bool> _sendSim(String phone, String message) async {
+    if (!Platform.isAndroid) {
+      print('⚠️  [SMS] SIM send only supported on Android');
+      return false;
+    }
+
+    // Ensure permissions are granted
+    if (!isSmsAvailable.value) {
+      await _initSimPermissions();
+    }
+
+    if (!isSmsAvailable.value) {
+      print('❌ [SMS] SIM send failed — permissions not granted');
+      Get.snackbar(
+        'SMS Permission Required',
+        'SMS sending requires permission to send messages. '
+            'Please grant SMS permission in app settings.',
+        backgroundColor: Colors.red,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
+      );
+      return false;
+    }
+
+    print('📱 [SMS] SIM sending to $phone');
+
     try {
-      final settings = _settingsService.systemSettings.value;
-      final mode = settings.smsMode; // 'sim' or 'gateway'
+      final success = await messenger
+          .sendSMS(phoneNumber: phone, message: message)
+          .timeout(const Duration(seconds: 45), onTimeout: () => false);
 
-      if (mode == 'gateway') {
-        // ── GATEWAY MODE ────────────────────────────────────────
-        if (!settings.isGatewayConfigured) {
-          print('❌ [SMS] Gateway mode selected but credentials are missing.');
-          Get.snackbar(
-            'SMS Gateway Not Configured',
-            'Gateway SMS mode is active but credentials are incomplete. '
-                'Go to Settings → System Settings → SMS Configuration to '
-                'add your gateway username, password and sender ID, '
-                'or switch to SIM Card mode.',
-            backgroundColor: const Color(0xFFB71C1C),
-            colorText: Colors.white,
-            duration: const Duration(seconds: 7),
-            snackPosition: SnackPosition.BOTTOM,
-            margin: const EdgeInsets.all(12),
-            icon: const Icon(Icons.sms_failed, color: Colors.white),
-          );
-          return false;
-        }
-
-        print('📡 [SMS] GATEWAY MODE → sending to $phoneNumber');
-        bool gatewaySuccess = false;
-        try {
-          gatewaySuccess = await sendSmsViaGateway(phoneNumber, message);
-        } catch (e) {
-          print('❌ [SMS] Gateway exception: $e');
-        }
-
-        if (gatewaySuccess) {
-          print('✅ [SMS] Gateway delivery succeeded');
-          return true;
-        }
-
-        // Gateway failed — try SIM fallback if enabled
-        if (settings.smsGatewayFallbackToSim) {
-          print('📱 [SMS] Gateway failed → SIM fallback...');
-          final simResult = await _sendDirectSmsInternal(phoneNumber, message);
-          if (simResult) {
-            print('✅ [SMS] SIM fallback succeeded');
-            return true;
-          }
-        }
-
-        print('❌ [SMS] Gateway failed and no successful fallback.');
-        Get.snackbar(
-          'SMS Failed',
-          'Could not send via SMS Gateway. '
-              'Check your gateway credentials in Settings or enable SIM fallback.',
-          backgroundColor: Colors.orange.shade800,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 5),
-          snackPosition: SnackPosition.BOTTOM,
-          margin: const EdgeInsets.all(12),
-        );
-        return false;
+      if (success) {
+        print('✅ [SMS] SIM send succeeded to $phone');
+        totalSmsSent.value++;
       } else {
-        // ── SIM CARD MODE (default) ────────────────────────────
-        print('📱 [SMS] SIM CARD MODE → sending to $phoneNumber');
-        return await _sendDirectSmsInternal(phoneNumber, message);
+        print('❌ [SMS] SIM send failed to $phone');
+        totalSmsFailed.value++;
       }
+      return success;
     } catch (e) {
-      print('❌ [SMS] _sendViaGatewayWithFallback error: $e');
+      print('❌ [SMS] SIM send exception: $e');
+      totalSmsFailed.value++;
       return false;
     }
   }
 
-  /// Main method to use - sends SMS immediately (with validation)
-  /// Properly observes SMS mode settings and handles configuration errors
-  Future<bool> sendSms(String phoneNumber, String message) async {
-    try {
-      final validatedNumber = validateKenyanPhoneNumber(phoneNumber);
-      if (validatedNumber == null) {
-        print(
-          'Invalid Kenyan phone number for SMS: $phoneNumber - Failed validation',
-        );
-        return false;
-      }
+  // ─────────────────────────────────────────────────────────────────────────
+  // ROBUST SEND (with retries) — used by controllers
+  // ─────────────────────────────────────────────────────────────────────────
 
-      // Get current settings and determine sending method
-      final settings = _settingsService.systemSettings.value;
-      final mode = settings.smsMode.toLowerCase().trim();
-
-      print('📱 [SMS] Current SMS mode: $mode');
-      print('📱 [SMS] Gateway enabled: ${settings.smsGatewayEnabled}');
-      print('📱 [SMS] Gateway configured: ${settings.isGatewayConfigured}');
-
-      // Handle different SMS modes properly
-      if (mode == 'gateway') {
-        // GATEWAY MODE - requires proper configuration
-        if (!settings.smsGatewayEnabled) {
-          print('❌ [SMS] Gateway mode selected but gateway is disabled in settings');
-          Get.snackbar(
-            'SMS Gateway Disabled',
-            'Gateway SMS mode is selected but gateway is disabled. '
-                'Please enable gateway in Settings or switch to SIM Card mode.',
-            backgroundColor: Colors.red,
-            colorText: Colors.white,
-            duration: const Duration(seconds: 5),
-            snackPosition: SnackPosition.BOTTOM,
-          );
-          return false;
-        }
-
-        if (!settings.isGatewayConfigured) {
-          print('❌ [SMS] Gateway mode selected but credentials are missing');
-          Get.snackbar(
-            'SMS Gateway Not Configured',
-            'Gateway SMS mode is active but credentials are incomplete. '
-                'Go to Settings → System Settings → SMS Configuration to '
-                'add your gateway credentials, or switch to SIM Card mode.',
-            backgroundColor: Colors.red,
-            colorText: Colors.white,
-            duration: const Duration(seconds: 7),
-            snackPosition: SnackPosition.BOTTOM,
-          );
-          return false;
-        }
-
-        print('📡 [SMS] GATEWAY MODE → sending to $validatedNumber');
-        bool gatewaySuccess = false;
-        try {
-          gatewaySuccess = await sendSmsViaGateway(validatedNumber, message);
-        } catch (e) {
-          print('❌ [SMS] Gateway exception: $e');
-        }
-
-        if (gatewaySuccess) {
-          print('✅ [SMS] Gateway delivery succeeded');
-          return true;
-        }
-
-        // Gateway failed - try SIM fallback if enabled
-        if (settings.smsGatewayFallbackToSim) {
-          print('📱 [SMS] Gateway failed → SIM fallback...');
-          final simResult = await _sendDirectSmsInternal(validatedNumber, message);
-          if (simResult) {
-            print('✅ [SMS] SIM fallback succeeded');
-            return true;
-          } else {
-            print('❌ [SMS] SIM fallback also failed');
-          }
-        }
-
-        print('❌ [SMS] Gateway failed and no successful fallback');
-        Get.snackbar(
-          'SMS Failed',
-          'Could not send via SMS Gateway. '
-              'Check your gateway credentials or enable SIM fallback.',
-          backgroundColor: Colors.orange,
-          colorText: Colors.white,
-          duration: const Duration(seconds: 5),
-          snackPosition: SnackPosition.BOTTOM,
-        );
-        return false;
-
-      } else {
-        // SIM CARD MODE (default and fallback)
-        print('📱 [SMS] SIM CARD MODE → sending to $validatedNumber');
-        return await _sendDirectSmsInternal(validatedNumber, message);
-      }
-
-    } catch (e) {
-      print('❌ [SMS] sendSms error: $e');
-      return false;
-    }
-  }
-
-  /// Send SMS immediately with retry logic (bypasses queue)
-  /// Enhanced with lifecycle protection, better error handling, and gateway-first logic
   Future<bool> sendSmsRobust(
     String phoneNumber,
     String message, {
     int maxRetries = 3,
     int priority = 1,
   }) async {
-    try {
-      final validatedNumber = validateKenyanPhoneNumber(phoneNumber);
-      if (validatedNumber == null) {
-        print('Invalid Kenyan phone number: $phoneNumber - Failed validation');
-        return false;
-      }
-
-      print(
-        '📱 [ROBUST SMS] Starting enhanced SMS sending with gateway-first logic to $validatedNumber...',
-      );
-      print('📱 [ROBUST SMS] Priority: $priority, Max retries: $maxRetries');
-
-      // **ENHANCEMENT 1: Pre-validate SMS capabilities before attempting**
-      if (!Platform.isAndroid) {
-        print('❌ [ROBUST SMS] Not on Android platform - SMS not supported');
-        return false;
-      }
-
-      // **ENHANCEMENT 2: Check and ensure SMS permissions are active for SIM fallback**
-      bool hasPermission = isSmsAvailable.value;
-      if (!hasPermission && _permissionService != null) {
-        print(
-          '🔧 [ROBUST SMS] SMS not available, attempting to get permissions...',
-        );
-        hasPermission = await _permissionService!.checkSmsPermission();
-        if (!hasPermission) {
-          hasPermission = await _permissionService!.requestSmsPermission();
-        }
-        isSmsAvailable.value = hasPermission;
-      }
-
-      // Note: We don't fail here if no SIM permissions since gateway might work
-      print(
-        '✅ [ROBUST SMS] SMS permissions check complete (SIM fallback: $hasPermission)',
-      );
-
-      // **ENHANCEMENT 3: Use enhanced retry logic with exponential backoff**
-      for (int attempt = 1; attempt <= maxRetries; attempt++) {
-        try {
-          print(
-            '📤 [ROBUST SMS] Attempt $attempt/$maxRetries for $validatedNumber',
-          );
-
-          // **ENHANCEMENT 4: Add pre-send delay for high-priority SMS to ensure system readiness**
-          if (priority >= 3 && attempt == 1) {
-            print(
-              '⏳ [ROBUST SMS] High priority SMS - ensuring system readiness...',
-            );
-            await Future.delayed(const Duration(milliseconds: 500));
-          }
-
-          // **ENHANCEMENT 5: Wrap SMS sending in isolate-like protection with gateway-first logic**
-          bool success = false;
-          try {
-            // Create a completer to handle the async operation with timeout
-            final completer = Completer<bool>();
-
-            // Start the SMS sending operation using proper mode handling
-            sendSms(validatedNumber, message)
-                .then((result) {
-                  if (!completer.isCompleted) {
-                    completer.complete(result);
-                  }
-                })
-                .catchError((error) {
-                  if (!completer.isCompleted) {
-                    completer.completeError(error);
-                  }
-                });
-
-            // Wait for completion with timeout
-            success = await completer.future.timeout(
-              Duration(
-                seconds:
-                    15 + (attempt * 3), // Longer timeout for gateway + fallback
-              ),
-              onTimeout: () {
-                print('⏰ [ROBUST SMS] Attempt $attempt timed out');
-                return false;
-              },
-            );
-          } catch (e) {
-            print('❌ [ROBUST SMS] Attempt $attempt failed with error: $e');
-            success = false;
-          }
-
-          if (success) {
-            print(
-              '✅ [ROBUST SMS] SMS sent successfully on attempt $attempt to $validatedNumber',
-            );
-            totalSmsSent.value++;
-
-            // **ENHANCEMENT 6: Add post-send verification delay**
-            print('✅ [ROBUST SMS] Adding post-send verification delay...');
-            await Future.delayed(const Duration(milliseconds: 1000));
-            print('✅ [ROBUST SMS] Verification complete');
-
-            return true;
-          } else {
-            print(
-              '❌ [ROBUST SMS] Attempt $attempt failed for $validatedNumber',
-            );
-            if (attempt < maxRetries) {
-              // **ENHANCEMENT 7: Enhanced exponential backoff with jitter**
-              final baseDelay = attempt * 2;
-              final jitter = (attempt * 0.5); // Add some randomness
-              final delaySeconds = baseDelay + jitter;
-              print(
-                '⏳ [ROBUST SMS] Waiting ${delaySeconds.toStringAsFixed(1)}s before retry...',
-              );
-              await Future.delayed(
-                Duration(milliseconds: (delaySeconds * 1000).round()),
-              );
-            }
-          }
-        } catch (e) {
-          print(
-            '❌ [ROBUST SMS] Attempt $attempt exception for $validatedNumber: $e',
-          );
-          if (attempt < maxRetries) {
-            final delaySeconds = attempt * 3; // Longer delay for exceptions
-            print(
-              '⏳ [ROBUST SMS] Exception recovery delay: ${delaySeconds}s...',
-            );
-            await Future.delayed(Duration(seconds: delaySeconds));
-          }
-        }
-      }
-
-      print(
-        '❌ [ROBUST SMS] All SMS attempts failed for $validatedNumber after $maxRetries tries',
-      );
-      totalSmsFailed.value++;
-      return false;
-    } catch (e) {
-      print('❌ [ROBUST SMS] Critical error in sendSmsRobust: $e');
-      print('❌ [ROBUST SMS] Stack trace: ${StackTrace.current}');
-      totalSmsFailed.value++;
+    final validated = validateKenyanPhoneNumber(phoneNumber);
+    if (validated == null) {
+      print('❌ [SMS-ROBUST] Invalid phone: $phoneNumber');
       return false;
     }
+
+    for (int attempt = 1; attempt <= maxRetries; attempt++) {
+      print('📤 [SMS-ROBUST] Attempt $attempt/$maxRetries → $validated');
+      try {
+        final success = await sendSms(
+          validated,
+          message,
+        ).timeout(const Duration(seconds: 60), onTimeout: () => false);
+
+        if (success) {
+          print('✅ [SMS-ROBUST] Sent on attempt $attempt');
+          return true;
+        }
+
+        if (attempt < maxRetries) {
+          final delay = attempt * 2;
+          print('⏳ [SMS-ROBUST] Retrying in ${delay}s...');
+          await Future.delayed(Duration(seconds: delay));
+        }
+      } catch (e) {
+        print('❌ [SMS-ROBUST] Attempt $attempt exception: $e');
+        if (attempt < maxRetries) {
+          await Future.delayed(Duration(seconds: attempt * 3));
+        }
+      }
+    }
+
+    print('❌ [SMS-ROBUST] All $maxRetries attempts failed for $validated');
+    totalSmsFailed.value++;
+    return false;
   }
 
-  /// Send SMS for coffee collection with robust handling using gateway-first priority
+  // ─────────────────────────────────────────────────────────────────────────
+  // DOMAIN-SPECIFIC HELPERS
+  // ─────────────────────────────────────────────────────────────────────────
+
   Future<bool> sendCoffeeCollectionSMS(CoffeeCollection collection) async {
-    try {
-      print(
-        '🔄 [COFFEE SMS] Starting coffee collection SMS for ${collection.memberName}',
+    print(
+      '🔄 [COFFEE-SMS] Sending for ${collection.memberName} (${collection.receiptNumber})',
+    );
+
+    final memberService = Get.find<MemberService>();
+    final member = await memberService.getMemberById(collection.memberId);
+
+    if (member?.phoneNumber == null || member!.phoneNumber!.isEmpty) {
+      print('❌ [COFFEE-SMS] No phone for ${collection.memberName}');
+      return false;
+    }
+
+    final validated = validateKenyanPhoneNumber(member.phoneNumber!);
+    if (validated == null) {
+      print('❌ [COFFEE-SMS] Invalid phone: ${member.phoneNumber}');
+      Get.snackbar(
+        'SMS Warning',
+        'Invalid phone number for ${collection.memberName}. Please update.',
+        backgroundColor: Colors.orange,
+        colorText: Colors.white,
+        snackPosition: SnackPosition.BOTTOM,
       );
+      return false;
+    }
 
-      if (collection.memberName.isEmpty) {
-        print(
-          '❌ [COFFEE SMS] No member name available for collection ${collection.id}',
-        );
-        return false;
-      }
+    // Build message
+    final settingsService = Get.find<SettingsService>();
+    final org = settingsService.organizationSettings.value;
 
-      // Get member phone number
-      final memberService = Get.find<MemberService>();
-      final member = await memberService.getMemberById(collection.memberId);
+    final coffeeService = Get.find<CoffeeCollectionService>();
+    final summary = await coffeeService.getMemberSeasonSummary(
+      collection.memberId,
+    );
+    final cumulative = _parseDouble(summary['allTimeWeight']);
 
-      if (member?.phoneNumber == null || member!.phoneNumber!.isEmpty) {
-        print(
-          '❌ [COFFEE SMS] No phone number available for member ${collection.memberName}',
-        );
-        return false;
-      }
-
-      // Validate phone number first
-      final validatedNumber = validateKenyanPhoneNumber(member.phoneNumber!);
-      if (validatedNumber == null) {
-        print(
-          '❌ [COFFEE SMS] Invalid phone number for member ${collection.memberName}: ${member.phoneNumber} - Kenyan phone validation failed',
-        );
-        return false;
-      }
-
-      print('✅ [COFFEE SMS] Phone number validated: $validatedNumber');
-
-      // Get organization settings for SMS format
-      final settingsService = Get.find<SettingsService>();
-      final orgSettings = settingsService.organizationSettings.value;
-      final systemSettings = settingsService.systemSettings.value;
-      final societyName = orgSettings.societyName;
-      final factoryName = orgSettings.factory;
-
-      // Log gateway configuration status
-      if (systemSettings.smsGatewayEnabled) {
-        print(
-          '📡 [COFFEE SMS] SMS gateway enabled - will attempt gateway-first sending',
-        );
-      } else {
-        print('📱 [COFFEE SMS] SMS gateway disabled - will use SIM card only');
-      }
-
-      // Calculate all-time cumulative weight for this member (across all seasons)
-      final coffeeCollectionService = Get.find<CoffeeCollectionService>();
-      final memberSummary = await coffeeCollectionService
-          .getMemberSeasonSummary(collection.memberId);
-
-      // Ensure we have a valid cumulative weight value with robust parsing
-      double allTimeCumulativeWeight = 0.0;
-      try {
-        final rawWeight = memberSummary['allTimeWeight'];
-        print(
-          '🔍 [COFFEE SMS] Raw weight from DB: $rawWeight (${rawWeight.runtimeType}) for member ${collection.memberName}',
-        );
-
-        if (rawWeight != null) {
-          // Handle different data types that might come from the database
-          if (rawWeight is num) {
-            allTimeCumulativeWeight = rawWeight.toDouble();
-          } else if (rawWeight is String) {
-            allTimeCumulativeWeight = double.tryParse(rawWeight) ?? 0.0;
-          } else {
-            // Try to convert to string first, then parse
-            allTimeCumulativeWeight =
-                double.tryParse(rawWeight.toString()) ?? 0.0;
-          }
-        }
-
-        // Additional validation to ensure the weight is valid and not negative
-        if (allTimeCumulativeWeight < 0 ||
-            allTimeCumulativeWeight.isNaN ||
-            allTimeCumulativeWeight.isInfinite) {
-          print(
-            '⚠️ [COFFEE SMS] Invalid weight detected: $allTimeCumulativeWeight, setting to 0.0',
-          );
-          allTimeCumulativeWeight = 0.0;
-        }
-
-        print(
-          '✅ [COFFEE SMS] Final cumulative weight: $allTimeCumulativeWeight kg for member ${collection.memberName}',
-        );
-      } catch (e) {
-        print(
-          '❌ [COFFEE SMS] Error parsing cumulative weight for member ${collection.memberName}: $e',
-        );
-        print('   Raw memberSummary: $memberSummary');
-        allTimeCumulativeWeight = 0.0;
-      }
-
-      final receiptNo = collection.receiptNumber ?? 'N/A';
-      final formattedDate = DateFormat(
-        'dd/MM/yy',
-      ).format(collection.collectionDate);
-
-      // Maintain existing SMS format exactly as before
-      final message = '''${societyName.toUpperCase()}
-Fac:$factoryName
-T/No:$receiptNo
-Date:$formattedDate
+    final msg = '''${org.societyName.toUpperCase()}
+Fac:${org.factory}
+T/No:${collection.receiptNumber ?? 'N/A'}
+Date:${DateFormat('dd/MM/yy').format(collection.collectionDate)}
 M/No:${collection.memberNumber}
 M/Name:${collection.memberName}
 Type:${collection.productType}
 Kgs:${collection.netWeight.toStringAsFixed(1)}
 Bags:${collection.numberOfBags}
-Total:${allTimeCumulativeWeight.toStringAsFixed(0)} kg
+Total:${cumulative.toStringAsFixed(0)} kg
 Served By:${collection.userName ?? 'N/A'}''';
 
-      print('📝 [COFFEE SMS] Message prepared (${message.length} chars)');
-
-      // Send SMS using current mode settings with proper error handling
-      print('📤 [COFFEE SMS] Sending SMS using current mode settings...');
-      final success = await sendSms(
-        validatedNumber,
-        message,
-      );
-
-      if (success) {
-        print(
-          '✅ [COFFEE SMS] Coffee collection SMS sent successfully for ${collection.memberName} ($validatedNumber)',
-        );
-        print(
-          '📊 [COFFEE SMS] Collection details: Receipt $receiptNo, Weight ${collection.netWeight.toStringAsFixed(1)}kg',
-        );
-      } else {
-        print(
-          '❌ [COFFEE SMS] Coffee collection SMS failed for ${collection.memberName} ($validatedNumber)',
-        );
-        print(
-          '⚠️ [COFFEE SMS] SMS failure will not prevent collection from being saved',
-        );
-
-        // Log additional context for troubleshooting
-        if (systemSettings.smsGatewayEnabled) {
-          print(
-            '🔧 [COFFEE SMS] Gateway was enabled but SMS still failed - check gateway configuration',
-          );
-        } else {
-          print('🔧 [COFFEE SMS] Gateway disabled - SIM card sending failed');
-        }
-      }
-
-      return success;
-    } catch (e) {
-      print('❌ [COFFEE SMS] Critical error sending coffee collection SMS: $e');
-      print(
-        '📋 [COFFEE SMS] Collection: ${collection.memberName} (${collection.receiptNumber})',
-      );
-      print(
-        '⚠️ [COFFEE SMS] SMS failure will not prevent collection from being saved',
-      );
-      totalSmsFailed.value++;
-      return false;
-    }
+    return await sendSms(validated, msg);
   }
 
-  /// Send SMS for inventory sale with cumulative credit calculation
   Future<bool> sendInventorySaleSMS(Sale sale) async {
-    try {
-      print(
-        '🔄 [INVENTORY SMS] Starting inventory sale SMS for ${sale.memberName}',
-      );
+    print(
+      '🔄 [SALE-SMS] Sending for ${sale.memberName} (${sale.receiptNumber})',
+    );
 
-      if (sale.memberName == null || sale.memberName!.isEmpty) {
-        print('❌ [INVENTORY SMS] No member name available for sale ${sale.id}');
-        return false;
-      }
+    if (sale.memberId == null || sale.memberId!.isEmpty) return false;
 
-      if (sale.memberId == null || sale.memberId!.isEmpty) {
-        print('❌ [INVENTORY SMS] No member ID available for sale ${sale.id}');
-        return false;
-      }
+    final memberService = Get.find<MemberService>();
+    final member = await memberService.getMemberById(sale.memberId!);
 
-      // Get member phone number
-      final memberService = Get.find<MemberService>();
-      final member = await memberService.getMemberById(sale.memberId!);
+    if (member?.phoneNumber == null || member!.phoneNumber!.isEmpty) {
+      print('❌ [SALE-SMS] No phone for ${sale.memberName}');
+      return false;
+    }
 
-      if (member?.phoneNumber == null || member!.phoneNumber!.isEmpty) {
-        print(
-          '❌ [INVENTORY SMS] No phone number available for member ${sale.memberName}',
-        );
-        return false;
-      }
+    final validated = validateKenyanPhoneNumber(member.phoneNumber!);
+    if (validated == null) {
+      print('❌ [SALE-SMS] Invalid phone: ${member.phoneNumber}');
+      return false;
+    }
 
-      // Validate phone number first
-      final validatedNumber = validateKenyanPhoneNumber(member.phoneNumber!);
-      if (validatedNumber == null) {
-        print(
-          '❌ [INVENTORY SMS] Invalid phone number for member ${sale.memberName}: ${member.phoneNumber}',
-        );
-        return false;
-      }
+    final settingsService = Get.find<SettingsService>();
+    final org = settingsService.organizationSettings.value;
+    final inventoryService = Get.find<InventoryService>();
+    final credit = await inventoryService.getMemberSeasonCredit(sale.memberId!);
 
-      print('✅ [INVENTORY SMS] Phone number validated: $validatedNumber');
-
-      // Get organization settings for SMS format
-      final settingsService = Get.find<SettingsService>();
-      final orgSettings = settingsService.organizationSettings.value;
-      final systemSettings = settingsService.systemSettings.value;
-      final societyName = orgSettings.societyName;
-      final factoryName = orgSettings.factory;
-
-      // Log gateway configuration status
-      if (systemSettings.smsGatewayEnabled) {
-        print(
-          '📡 [INVENTORY SMS] SMS gateway enabled - will attempt gateway-first sending',
-        );
-      } else {
-        print(
-          '📱 [INVENTORY SMS] SMS gateway disabled - will use SIM card only',
-        );
-      }
-
-      // Calculate cumulative credit for this member (current inventory season only)
-      final inventoryService = Get.find<InventoryService>();
-      final cumulativeCredit = await inventoryService.getMemberSeasonCredit(
-        sale.memberId!,
-      );
-
-      print(
-        '✅ [INVENTORY SMS] Cumulative credit calculated: KSh ${cumulativeCredit.toStringAsFixed(2)} for member ${sale.memberName}',
-      );
-
-      final receiptNo = sale.receiptNumber ?? 'N/A';
-      final formattedDate = DateFormat('dd/MM/yy').format(sale.saleDate);
-      final saleTypeDisplay = sale.saleType == 'CREDIT' ? 'Credit' : 'Cash';
-
-      // Create SMS message for inventory sale
-      final message = '''${societyName.toUpperCase()}
-Fac:$factoryName
-T/No:$receiptNo
-Date:$formattedDate
+    final msg = '''${org.societyName.toUpperCase()}
+Fac:${org.factory}
+T/No:${sale.receiptNumber ?? 'N/A'}
+Date:${DateFormat('dd/MM/yy').format(sale.saleDate)}
 M/No:${member.memberNumber}
 M/Name:${sale.memberName}
-Type:$saleTypeDisplay Sale
+Type:${sale.saleType == 'CREDIT' ? 'Credit' : 'Cash'} Sale
 Amount:KSh ${sale.totalAmount.toStringAsFixed(2)}
 Paid:KSh ${sale.paidAmount.toStringAsFixed(2)}
 Balance:KSh ${sale.balanceAmount.toStringAsFixed(2)}
-Total Credit:KSh ${cumulativeCredit.toStringAsFixed(0)}
+Total Credit:KSh ${credit.toStringAsFixed(0)}
 Served By:${sale.userName ?? 'N/A'}''';
 
-      print('📝 [INVENTORY SMS] Message prepared (${message.length} chars)');
-
-      // Send SMS using current mode settings
-      print(
-        '📤 [INVENTORY SMS] Sending SMS using current mode settings...',
-      );
-      final success = await sendSms(
-        validatedNumber,
-        message,
-      );
-
-      if (success) {
-        print(
-          '✅ [INVENTORY SMS] SMS sent successfully to ${sale.memberName} ($validatedNumber)',
-        );
-        print(
-          '📊 [INVENTORY SMS] Sale details: Receipt $receiptNo, Amount KSh ${sale.totalAmount.toStringAsFixed(2)}',
-        );
-      } else {
-        print(
-          '❌ [INVENTORY SMS] Failed to send SMS to ${sale.memberName} ($validatedNumber)',
-        );
-      }
-
-      return success;
-    } catch (e) {
-      print(
-        '❌ [INVENTORY SMS] Error sending inventory sale SMS for ${sale.memberName}: $e',
-      );
-      totalSmsFailed.value++;
-      return false;
-    }
+    return await sendSms(validated, msg);
   }
 
-  /// Add diagnostic testing function to help troubleshoot
-  Future<Map<String, dynamic>> runSmsDiagnostic(String testPhoneNumber) async {
-    Map<String, dynamic> results = {
+  // ─────────────────────────────────────────────────────────────────────────
+  // DIAGNOSTICS
+  // ─────────────────────────────────────────────────────────────────────────
+
+  Future<Map<String, dynamic>> runSmsDiagnostic(String testPhone) async {
+    final results = <String, dynamic>{
       'permissions': false,
-      'smsAvailable': false,
       'phoneValidation': false,
       'validatedPhone': '',
-      'sendAttempt': false,
       'sendSuccess': false,
       'error': '',
-      'queueSize': _smsQueue.length,
-      'totalSent': totalSmsSent.value,
-      'totalFailed': totalSmsFailed.value,
-      // Gateway-specific results
-      'gatewayEnabled': false,
+      'currentMode': currentSmsMode.value,
       'gatewayConfigured': false,
-      'gatewayConnectivity': false,
-      'gatewayAttempt': false,
-      'gatewaySuccess': false,
-      'gatewayError': '',
-      'simFallbackEnabled': false,
-      'simAttempt': false,
-      'simSuccess': false,
       'channelUsed': '',
-    };
-
-    try {
-      // Check phone number validation first
-      final validatedNumber = validateKenyanPhoneNumber(testPhoneNumber);
-      if (validatedNumber != null) {
-        results['phoneValidation'] = true;
-        results['validatedPhone'] = validatedNumber;
-      } else {
-        results['error'] =
-            'Invalid Kenyan phone number format: $testPhoneNumber';
-        return results;
-      }
-
-      // Check gateway configuration
-      final settings = await _settingsService.getCompleteSystemSettings();
-      results['gatewayEnabled'] = settings.smsGatewayEnabled;
-      results['gatewayConfigured'] = _isGatewayConfigured(settings);
-      results['simFallbackEnabled'] = settings.smsGatewayFallbackToSim;
-
-      // Check permissions
-      results['permissions'] = false;
-      if (_permissionService != null) {
-        results['permissions'] = await _permissionService!.checkSmsPermission();
-      }
-      results['smsAvailable'] = isSmsAvailable.value;
-
-      // Test gateway connectivity if configured
-      if (results['gatewayConfigured'] == true) {
-        results['gatewayConnectivity'] = await _testGatewayConnectivity(
-          settings,
-        );
-      }
-
-      // Try sending a test message using the gateway-first approach
-      if (results['phoneValidation'] == true) {
-        try {
-          final testMessage =
-              'Test SMS from Farm Pro app. ${DateFormat('dd/MM/yy HH:mm').format(DateTime.now())}';
-
-          results['sendAttempt'] = true;
-
-          // Use the gateway-first approach like the actual SMS sending
-          final success = await _sendTestSmsWithDiagnostics(
-            validatedNumber,
-            testMessage,
-            results,
-          );
-
-          results['sendSuccess'] = success;
-          results['testMessage'] = testMessage;
-
-          if (success) {
-            totalSmsSent.value++;
-          } else {
-            totalSmsFailed.value++;
-          }
-        } catch (e) {
-          results['error'] += 'Send error: $e. ';
-          totalSmsFailed.value++;
-        }
-      } else {
-        results['error'] += 'Phone number validation failed. ';
-      }
-
-      return results;
-    } catch (e) {
-      results['error'] += 'General diagnostic error: $e';
-      return results;
-    }
-  }
-
-  /// Test gateway connectivity without sending SMS
-  Future<bool> _testGatewayConnectivity(SystemSettings settings) async {
-    try {
-      if (!settings.smsGatewayEnabled ||
-          settings.smsGatewayUrl.isEmpty ||
-          settings.smsGatewayUsername.isEmpty ||
-          settings.smsGatewayPassword.isEmpty) {
-        return false;
-      }
-
-      // Test basic connectivity to the gateway URL
-      final uri = Uri.parse(settings.smsGatewayUrl);
-      final client = http.Client();
-
-      try {
-        final response = await client
-            .head(uri)
-            .timeout(const Duration(seconds: 10));
-
-        // Gateway is reachable if we get any HTTP response
-        return response.statusCode < 500;
-      } catch (e) {
-        print('Gateway connectivity test failed: $e');
-        return false;
-      } finally {
-        client.close();
-      }
-    } catch (e) {
-      print('Gateway connectivity test error: $e');
-      return false;
-    }
-  }
-
-  /// Check if gateway is properly configured
-  bool _isGatewayConfigured(SystemSettings settings) {
-    return settings.smsGatewayEnabled &&
-        settings.smsGatewayUrl.isNotEmpty &&
-        settings.smsGatewayUsername.isNotEmpty &&
-        settings.smsGatewayPassword.isNotEmpty &&
-        settings.smsGatewaySenderId.isNotEmpty;
-  }
-
-  /// Send test SMS with detailed diagnostics
-  Future<bool> _sendTestSmsWithDiagnostics(
-    String phoneNumber,
-    String message,
-    Map<String, dynamic> results,
-  ) async {
-    try {
-      final settings = await _settingsService.getCompleteSystemSettings();
-
-      // Try gateway first if enabled and configured
-      if (settings.smsGatewayEnabled && _isGatewayConfigured(settings)) {
-        results['gatewayAttempt'] = true;
-
-        try {
-          print('🌐 [DIAGNOSTIC] Testing SMS gateway...');
-          final gatewaySuccess = await sendSmsViaGateway(phoneNumber, message);
-
-          results['gatewaySuccess'] = gatewaySuccess;
-
-          if (gatewaySuccess) {
-            results['channelUsed'] = 'Gateway';
-            print('✅ [DIAGNOSTIC] Gateway test successful');
-            return true;
-          } else {
-            results['gatewayError'] =
-                'Gateway send failed - check credentials and connectivity';
-            print('❌ [DIAGNOSTIC] Gateway test failed');
-          }
-        } catch (e) {
-          results['gatewayError'] = 'Gateway error: $e';
-          print('❌ [DIAGNOSTIC] Gateway test error: $e');
-        }
-
-        // Try SIM fallback if gateway failed and fallback is enabled
-        if (settings.smsGatewayFallbackToSim &&
-            results['permissions'] == true) {
-          results['simAttempt'] = true;
-
-          try {
-            print('📱 [DIAGNOSTIC] Testing SIM fallback...');
-            final simSuccess = await _sendDirectSmsInternal(
-              phoneNumber,
-              message,
-            );
-
-            results['simSuccess'] = simSuccess;
-
-            if (simSuccess) {
-              results['channelUsed'] = 'SIM (Fallback)';
-              print('✅ [DIAGNOSTIC] SIM fallback test successful');
-              return true;
-            } else {
-              print('❌ [DIAGNOSTIC] SIM fallback test failed');
-            }
-          } catch (e) {
-            results['error'] += 'SIM fallback error: $e. ';
-            print('❌ [DIAGNOSTIC] SIM fallback test error: $e');
-          }
-        }
-      } else {
-        // Gateway not configured, try SIM directly
-        if (results['permissions'] == true) {
-          results['simAttempt'] = true;
-
-          try {
-            print('📱 [DIAGNOSTIC] Testing SIM (gateway not configured)...');
-            final simSuccess = await _sendDirectSmsInternal(
-              phoneNumber,
-              message,
-            );
-
-            results['simSuccess'] = simSuccess;
-
-            if (simSuccess) {
-              results['channelUsed'] = 'SIM';
-              print('✅ [DIAGNOSTIC] SIM test successful');
-              return true;
-            } else {
-              print('❌ [DIAGNOSTIC] SIM test failed');
-            }
-          } catch (e) {
-            results['error'] += 'SIM error: $e. ';
-            print('❌ [DIAGNOSTIC] SIM test error: $e');
-          }
-        } else {
-          results['error'] += 'SMS permissions not granted. ';
-        }
-      }
-
-      return false;
-    } catch (e) {
-      results['error'] += 'Test SMS error: $e. ';
-      return false;
-    }
-  }
-
-  /// Get SMS statistics
-  Map<String, dynamic> getSmsStatistics() {
-    return {
       'totalSent': totalSmsSent.value,
       'totalFailed': totalSmsFailed.value,
-      'queueSize': smsQueueSize.value,
-      'successRate':
-          totalSmsSent.value + totalSmsFailed.value > 0
-              ? (totalSmsSent.value /
-                      (totalSmsSent.value + totalSmsFailed.value) *
-                      100)
-                  .toStringAsFixed(1)
-              : '0.0',
-      'isProcessing': _isProcessingQueue,
     };
+
+    final validated = validateKenyanPhoneNumber(testPhone);
+    if (validated == null) {
+      results['error'] = 'Invalid phone number format: $testPhone';
+      return results;
+    }
+    results['phoneValidation'] = true;
+    results['validatedPhone'] = validated;
+
+    final settings = _settingsService.systemSettings.value;
+    results['gatewayConfigured'] = settings.isGatewayConfigured;
+
+    if (_permissionService != null) {
+      results['permissions'] = await _permissionService!.checkSmsPermission();
+    }
+
+    final testMsg =
+        'Farm Pro SMS test — ${DateFormat('dd/MM/yy HH:mm').format(DateTime.now())}';
+
+    final success = await sendSms(validated, testMsg);
+    results['sendSuccess'] = success;
+    results['channelUsed'] = currentSmsMode.value;
+
+    if (success)
+      totalSmsSent.value++;
+    else
+      totalSmsFailed.value++;
+
+    return results;
   }
 
-  /// Clear SMS queue (for admin use)
+  Map<String, dynamic> getSmsStatistics() => {
+    'totalSent': totalSmsSent.value,
+    'totalFailed': totalSmsFailed.value,
+    'queueSize': _smsQueue.length,
+    'successRate':
+        (totalSmsSent.value + totalSmsFailed.value) > 0
+            ? (totalSmsSent.value /
+                    (totalSmsSent.value + totalSmsFailed.value) *
+                    100)
+                .toStringAsFixed(1)
+            : '0.0',
+    'isProcessing': _isProcessingQueue,
+    'currentMode': currentSmsMode.value,
+  };
+
   void clearSmsQueue() {
     _smsQueue.clear();
     smsQueueSize.value = 0;
-    print('SMS queue cleared');
   }
 
-  /// Reset SMS statistics
   void resetSmsStatistics() {
     totalSmsSent.value = 0;
     totalSmsFailed.value = 0;
-    print('SMS statistics reset');
   }
 
-  // Test if SMS sending is actually working
-  Future<bool> testSmsSending() async {
+  Future<bool> testSmsSending() async =>
+      Platform.isAndroid && isSmsAvailable.value;
+
+  Future<bool> checkSmsPermission() async {
+    if (_permissionService == null) return false;
+    return await _permissionService!.checkSmsPermission();
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // LEGACY QUEUE (kept for backward-compat)
+  // ─────────────────────────────────────────────────────────────────────────
+
+  void queueSms(
+    String phone,
+    String message, {
+    int maxRetries = 3,
+    int priority = 1,
+  }) {
+    // Immediately send instead of queueing
+    sendSmsRobust(phone, message, maxRetries: maxRetries, priority: priority);
+  }
+
+  void _startQueueProcessor() {
+    _queueProcessor?.cancel();
+    _queueProcessor = Timer.periodic(const Duration(seconds: 3), (timer) {
+      if (!_isProcessingQueue && _smsQueue.isNotEmpty) {
+        _processQueue();
+      }
+    });
+  }
+
+  Future<void> _processQueue() async {
+    if (_isProcessingQueue || _smsQueue.isEmpty) return;
+    _isProcessingQueue = true;
     try {
-      print('🧪 Testing SMS sending capability...');
-
-      if (!Platform.isAndroid) {
-        print('❌ SMS test failed: Not on Android platform');
-        return false;
-      }
-
-      // Check permissions first
-      bool hasPermission = false;
-      if (_permissionService != null) {
-        hasPermission = await _permissionService!.checkSmsPermission();
-        if (!hasPermission) {
-          hasPermission = await _permissionService!.requestSmsPermission();
-        }
-      }
-
-      if (!hasPermission) {
-        print('❌ SMS test failed: No permissions');
-        return false;
-      }
-
-      // Test with a dummy (non-sending) call
-      try {
-        print('🔧 Testing messenger interface...');
-        // We can't do a real test without actually sending, but we can check if the plugin responds
-        final testResult = await Future.microtask(() => true);
-        print('✅ SMS messenger interface appears functional');
-        return testResult;
-      } catch (e) {
-        print('❌ SMS messenger test failed: $e');
-        return false;
-      }
-    } catch (e) {
-      print('❌ SMS test exception: $e');
-      return false;
+      final item = _smsQueue.removeAt(0);
+      smsQueueSize.value = _smsQueue.length;
+      await sendSms(item.phoneNumber, item.message);
+    } finally {
+      _isProcessingQueue = false;
     }
+  }
+
+  void _startHealthMonitor() {
+    Timer.periodic(const Duration(minutes: 5), (_) {
+      if (_queueProcessor == null || !_queueProcessor!.isActive) {
+        _startQueueProcessor();
+      }
+    });
+  }
+
+  // ─────────────────────────────────────────────────────────────────────────
+  // UTILITIES
+  // ─────────────────────────────────────────────────────────────────────────
+
+  double _parseDouble(dynamic value) {
+    if (value == null) return 0.0;
+    if (value is num) return value.toDouble();
+    return double.tryParse(value.toString()) ?? 0.0;
   }
 }
 
-/// SMS Queue Item class
 class SmsQueueItem {
   final String phoneNumber;
   final String message;

@@ -14,48 +14,50 @@ class SettingsService extends GetxService {
   final DatabaseHelper _dbHelper = Get.find<DatabaseHelper>();
   final FlutterSecureStorage _secureStorage = const FlutterSecureStorage();
 
-  final Rx<OrganizationSettings> organizationSettings = OrganizationSettings(
-    id: 'default',
-    societyName: 'Farm Fresh Cooperative',
-    logoPath: null,
-    factory: 'Main Factory',
-    address: 'P.O. Box 123, Nairobi',
-    email: 'info@farmfresh.co.ke',
-    phoneNumber: '+254 700 000000',
-    website: 'www.farmfresh.co.ke',
-    slogan: 'Quality Coffee, Quality Life',
-  ).obs;
+  final Rx<OrganizationSettings> organizationSettings =
+      OrganizationSettings(
+        id: 'default',
+        societyName: 'Farm Fresh Cooperative',
+        logoPath: null,
+        factory: 'Main Factory',
+        address: 'P.O. Box 123, Nairobi',
+        email: 'info@farmfresh.co.ke',
+        phoneNumber: '',
+        website: 'www.farmfresh.co.ke',
+        slogan: 'Quality Coffee, Quality Life',
+      ).obs;
 
-  final Rx<SystemSettings> systemSettings = SystemSettings(
-    id: 'default',
-    enablePrinting: true,
-    enableSms: true,
-    enableManualWeightEntry: true,
-    enableBluetoothScale: true,
-    defaultPrinterAddress: null,
-    defaultScaleAddress: null,
-    coffeePrice: 50.0,
-    currency: 'KES',
-    // SMS Gateway defaults
-    smsGatewayEnabled: true,
-    smsGatewayUrl: 'https://portal.zettatel.com/SMSApi/send',
-    smsGatewayUsername: '',
-    smsGatewayPassword: '',
-    smsGatewaySenderId: 'FARMPRO',
-    smsGatewayApiKey: '',
-    smsGatewayFallbackToSim: true,
-    // Bulk SMS defaults
-    enableBulkSms: true,
-    bulkSmsDefaultMessage:
-        'Dear {name}, your current balance is KSh {balance}. Thank you for your business.',
-    bulkSmsIncludeBalance: true,
-    bulkSmsIncludeName: true,
-    bulkSmsMaxRecipients: 50,
-    bulkSmsBatchDelay: 2,
-    bulkSmsConfirmBeforeSend: true,
-    bulkSmsFilterType: 'all',
-    bulkSmsLogActivity: true,
-  ).obs;
+  final Rx<SystemSettings> systemSettings =
+      SystemSettings(
+        id: 'default',
+        enablePrinting: true,
+        enableSms: true,
+        enableManualWeightEntry: true,
+        enableBluetoothScale: true,
+        defaultPrinterAddress: null,
+        defaultScaleAddress: null,
+        coffeePrice: 50.0,
+        currency: 'KES',
+        // SMS Gateway defaults
+        smsGatewayEnabled: true,
+        smsGatewayUrl: 'https://portal.zettatel.com/SMSApi/send',
+        smsGatewayUsername: '',
+        smsGatewayPassword: '',
+        smsGatewaySenderId: 'FARMPRO',
+        smsGatewayApiKey: '',
+        smsGatewayFallbackToSim: true,
+        // Bulk SMS defaults
+        enableBulkSms: true,
+        bulkSmsDefaultMessage:
+            'Dear {name}, your current balance is KSh {balance}. Thank you for your business.',
+        bulkSmsIncludeBalance: true,
+        bulkSmsIncludeName: true,
+        bulkSmsMaxRecipients: 50,
+        bulkSmsBatchDelay: 2,
+        bulkSmsConfirmBeforeSend: true,
+        bulkSmsFilterType: 'all',
+        bulkSmsLogActivity: true,
+      ).obs;
 
   // Dedicated reactive tare weight property for fine-grained updates
   final RxDouble defaultTareWeight = 0.5.obs;
@@ -593,9 +595,8 @@ class SettingsService extends GetxService {
     try {
       // Get current table structure
       final tableInfo = await db.rawQuery("PRAGMA table_info(system_settings)");
-      final existingColumns = tableInfo
-          .map((col) => col['name'] as String)
-          .toSet();
+      final existingColumns =
+          tableInfo.map((col) => col['name'] as String).toSet();
 
       // Filter settingsMap to only include existing columns
       final filteredMap = <String, dynamic>{};

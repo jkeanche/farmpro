@@ -349,16 +349,14 @@ class PrintService extends GetxService {
     }
   }
 
-  // ─── PDF Generation ─────────────────────────────────────────────────────────
-  // Font size constants (points) aligned to 80mm thermal ESC/POS conventions.
-  static const double _fsOrgName = 11.0;   // Society / org name — largest
-  static const double _fsSubHeader = 9.0;  // Factory, address
-  static const double _fsSection = 8.5;    // Section headings (ITEMS, WEIGHT…)
-  static const double _fsBody = 8.0;       // Standard body rows
-  static const double _fsSmall = 7.5;      // Labels, secondary info
-  static const double _fsTotalKey = 9.0;   // Grand-total label
-  static const double _fsTotalVal = 9.0;   // Grand-total value
-  static const double _fsFooter = 7.0;     // Footer / slogan
+  static const double _fsOrgName = 13.0; // Society / org name — more prominent
+  static const double _fsSubHeader = 10.5; // Factory, address
+  static const double _fsSection = 10.0; // Section headings
+  static const double _fsBody = 9.5; // Standard body rows (most important fix)
+  static const double _fsSmall = 9.0; // Labels, secondary info
+  static const double _fsTotalKey = 11.0; // Grand-total label
+  static const double _fsTotalVal = 11.5; // Grand-total value (slightly bigger)
+  static const double _fsFooter = 8.5; // Footer / slogan
 
   Future<Uint8List> _generateReceiptPdf(
     Map<String, dynamic> receiptData, {
@@ -469,15 +467,26 @@ class PrintService extends GetxService {
                   receiptData['receiptNumber'] ?? 'N/A',
                   bold: true,
                 ),
-                _labelValueRow('Member', receiptData['memberName'] ?? 'N/A', bold: true),
-                _labelValueRow('Member #', receiptData['memberNumber'] ?? 'N/A'),
+                _labelValueRow(
+                  'Member',
+                  receiptData['memberName'] ?? 'N/A',
+                  bold: true,
+                ),
+                _labelValueRow(
+                  'Member #',
+                  receiptData['memberNumber'] ?? 'N/A',
+                ),
                 _labelValueRow(
                   receiptData['type'] == 'coffee_collection'
                       ? 'Collection Date'
                       : 'Date',
                   receiptData['date'] ?? 'N/A',
                 ),
-                _labelValueRow('Served By', receiptData['servedBy'] ?? 'N/A', bold: true),
+                _labelValueRow(
+                  'Served By',
+                  receiptData['servedBy'] ?? 'N/A',
+                  bold: true,
+                ),
                 pw.SizedBox(height: 3),
 
                 // ── COFFEE COLLECTION DETAILS ─────────────────────────────
@@ -489,7 +498,10 @@ class PrintService extends GetxService {
                     bold: true,
                   ),
                   _labelValueRow('Season', receiptData['seasonName'] ?? 'N/A'),
-                  _labelValueRow('No. of Bags', receiptData['numberOfBags'] ?? 'N/A'),
+                  _labelValueRow(
+                    'No. of Bags',
+                    receiptData['numberOfBags'] ?? 'N/A',
+                  ),
                   pw.SizedBox(height: 3),
                 ],
 
@@ -598,9 +610,7 @@ class PrintService extends GetxService {
                   ),
                   _labelValueRow('Paid', receiptData['paidAmount'] ?? '0.00'),
                   if (receiptData['saleType'] == 'CREDIT' &&
-                      (double.tryParse(
-                                receiptData['balanceAmount'] ?? '0',
-                              ) ??
+                      (double.tryParse(receiptData['balanceAmount'] ?? '0') ??
                               0) >
                           0) ...[
                     _labelValueRow(
@@ -734,9 +744,10 @@ class PrintService extends GetxService {
     bool bold = false,
     double fontSize = _fsBody,
   }) {
-    final style = bold
-        ? pw.TextStyle(fontSize: fontSize, fontWeight: pw.FontWeight.bold)
-        : pw.TextStyle(fontSize: fontSize);
+    final style =
+        bold
+            ? pw.TextStyle(fontSize: fontSize, fontWeight: pw.FontWeight.bold)
+            : pw.TextStyle(fontSize: fontSize);
     final labelStyle = pw.TextStyle(fontSize: _fsSmall);
 
     return pw.Padding(

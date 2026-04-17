@@ -326,7 +326,7 @@ class CoffeeCollectionController extends GetxController {
 
   // Send SMS for collection using robust queue system
   Future<void> sendCollectionSMS(CoffeeCollection collection) async {
-    // Prevent duplicate SMS sending (same as cancel SMS)
+    // Prevent duplicate SMS sending
     if (_isSendingSMS) {
       print(
         'SMS sending already in progress for ${collection.memberName}, skipping duplicate',
@@ -344,7 +344,7 @@ class CoffeeCollectionController extends GetxController {
       // Check if SMS is enabled
       final sysSettings = settingsService.systemSettings.value;
       if (sysSettings.enableSms != true) {
-        print('❌ SMS is disabled in system settings');
+        print('SMS is disabled in system settings');
         return;
       }
 
@@ -382,59 +382,31 @@ class CoffeeCollectionController extends GetxController {
       final societyName = orgSettings.societyName;
       final factoryName = orgSettings.factory;
 
-      // Calculate all-time cumulative weight for this member (across all seasons)
-      final memberSummary = await getMemberSeasonSummary(collection.memberId);
+      // Compute cumulative weight by summing netWeight of all season collections.
+      // This guarantees tare weight is never included — netWeight is always
+      // grossWeight − tareWeight as stored on each CoffeeCollection record.
+      final seasonId = _seasonService?.currentSeason?.id;
+      final memberCollections = await getMemberCollections(
+        collection.memberId,
+        seasonId: seasonId,
+      );
+      final allTimeCumulativeWeight = memberCollections.fold<double>(
+        0.0,
+        (sum, c) => sum + c.netWeight,
+      );
 
-      // Ensure we have a valid cumulative weight value with robust parsing
-      double allTimeCumulativeWeight = 0.0;
-      try {
-        final rawWeight = memberSummary['allTimeWeight'];
-        print(
-          '🔍 Controller SMS Debug - Raw weight from DB: $rawWeight (${rawWeight.runtimeType}) for member ${collection.memberName}',
-        );
-
-        if (rawWeight != null) {
-          // Handle different data types that might come from the database
-          if (rawWeight is num) {
-            allTimeCumulativeWeight = rawWeight.toDouble();
-          } else if (rawWeight is String) {
-            allTimeCumulativeWeight = double.tryParse(rawWeight) ?? 0.0;
-          } else {
-            // Try to convert to string first, then parse
-            allTimeCumulativeWeight =
-                double.tryParse(rawWeight.toString()) ?? 0.0;
-          }
-        }
-
-        // Additional validation to ensure the weight is valid and not negative
-        if (allTimeCumulativeWeight < 0 ||
-            allTimeCumulativeWeight.isNaN ||
-            allTimeCumulativeWeight.isInfinite) {
-          print(
-            '⚠️  Controller SMS Debug - Invalid weight detected: $allTimeCumulativeWeight, setting to 0.0',
-          );
-          allTimeCumulativeWeight = 0.0;
-        }
-
-        print(
-          '✅ Controller SMS Debug - Final cumulative weight: $allTimeCumulativeWeight kg for member ${collection.memberName}',
-        );
-      } catch (e) {
-        print(
-          '❌ Error parsing cumulative weight for member ${collection.memberName}: $e',
-        );
-        print('   Raw memberSummary: $memberSummary');
-        allTimeCumulativeWeight = 0.0;
-      }
+      print(
+        '[SMS] Cumulative net weight for ${collection.memberName}: '
+        '$allTimeCumulativeWeight kg (${memberCollections.length} collections, '
+        'season: ${seasonId ?? "all"})',
+      );
 
       final receiptNo = collection.receiptNumber ?? 'N/A';
       final formattedDate = DateFormat(
         'dd/MM/yy',
       ).format(collection.collectionDate);
 
-      // Create SMS message using same format as the service but with robust handling
-      final message =
-          '''${societyName.toUpperCase()}
+      final message = '''${societyName.toUpperCase()}
 Fac:$factoryName
 T/No:$receiptNo
 Date:$formattedDate
@@ -448,7 +420,7 @@ Served By:${collection.userName ?? 'N/A'}''';
 
       print('Sending SMS immediately to $validatedNumber for collection');
 
-      // Send SMS immediately with robust retry logic (same as cancel SMS)
+      // Send SMS immediately with robust retry logic
       final success = await smsService.sendSmsRobust(
         validatedNumber,
         message,
@@ -456,10 +428,11 @@ Served By:${collection.userName ?? 'N/A'}''';
         priority: 2,
       );
 
-      // Show confirmation to user
+      if (!success) {
+        print('❌ [SMS] Failed to deliver collection SMS to $validatedNumber');
+      }
     } catch (e) {
       print('Failed to send collection SMS: $e');
-      // Show error to user but don't block the UI
       Get.snackbar(
         'SMS Error',
         'Error sending collection notification: ${e.toString()}',
@@ -473,7 +446,7 @@ Served By:${collection.userName ?? 'N/A'}''';
     }
   }
 
-  // Send robust SMS for collection update notifications
+  // Send robust SMS for collection update/deletion notifications
   Future<void> sendCollectionUpdateSMS(
     CoffeeCollection collection, {
     required bool isEdit,
@@ -493,7 +466,6 @@ Served By:${collection.userName ?? 'N/A'}''';
       final settingsService = Get.find<SettingsService>();
       final memberService = Get.find<MemberService>();
 
-      // Always attempt to send SMS - don't check if SMS is enabled
       print(
         'Attempting to send ${isEdit ? "update" : "deletion"} SMS for collection ${collection.receiptNumber}',
       );
@@ -527,15 +499,28 @@ Served By:${collection.userName ?? 'N/A'}''';
       final orgSettings = settingsService.organizationSettings.value;
       final societyName = orgSettings.societyName;
 
-      // Calculate new all-time cumulative weight for this member (across all seasons)
-      final memberSummary = await getMemberSeasonSummary(collection.memberId);
-      final newAllTimeCumulativeWeight = memberSummary['allTimeWeight'] ?? 0.0;
+      // Compute new cumulative weight by summing netWeight of all season
+      // collections after the edit/deletion has already been applied to the DB.
+      // Using netWeight ensures gross weight and tare weight are never mixed up.
+      final seasonId = _seasonService?.currentSeason?.id;
+      final memberCollections = await getMemberCollections(
+        collection.memberId,
+        seasonId: seasonId,
+      );
+      final newAllTimeCumulativeWeight = memberCollections.fold<double>(
+        0.0,
+        (sum, c) => sum + c.netWeight,
+      );
+
+      print(
+        '✅ [SMS] Updated cumulative net weight for ${collection.memberName}: '
+        '$newAllTimeCumulativeWeight kg (${memberCollections.length} collections)',
+      );
 
       // Create SMS message
       String message;
       if (isEdit) {
-        message =
-            '''Your coffee collection has been updated:
+        message = '''Your coffee collection has been updated:
 Updated details:
 Date: ${DateFormat('dd/MM/yy').format(collection.collectionDate)}
 Weight: ${collection.netWeight.toStringAsFixed(1)} kg
@@ -544,8 +529,7 @@ Receipt #: ${collection.receiptNumber ?? "N/A"}
 Total: ${newAllTimeCumulativeWeight.toStringAsFixed(1)} kg
 $societyName''';
       } else {
-        message =
-            '''Coffee collection record removed:
+        message = '''Coffee collection record removed:
 Removed details:
 Date: ${DateFormat('dd/MM/yy').format(collection.collectionDate)}
 Weight: ${collection.netWeight.toStringAsFixed(1)} kg
@@ -567,7 +551,11 @@ $societyName''';
         priority: 1,
       );
 
-      // Show confirmation to user
+      if (!success) {
+        print(
+          '❌ [SMS] Failed to deliver ${isEdit ? "update" : "deletion"} SMS to $validatedNumber',
+        );
+      }
     } catch (e) {
       print(
         'Failed to send collection ${isEdit ? "update" : "deletion"} SMS: $e',
@@ -589,8 +577,8 @@ $societyName''';
     error.value = '';
 
     try {
-      final importedCollections = await _collectionService!
-          .importCollectionsFromCsv();
+      final importedCollections =
+          await _collectionService!.importCollectionsFromCsv();
 
       // Force refresh all collections data to ensure imported data appears in filters
       await refreshCollections();
