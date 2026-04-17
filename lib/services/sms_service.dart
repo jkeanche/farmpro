@@ -138,7 +138,8 @@ class SmsService extends GetxService {
         processedNumber = cleaned.substring(3);
       } else if (cleaned.startsWith('0')) {
         processedNumber = cleaned.substring(1);
-      } else if (cleaned.length == 9 && cleaned.startsWith(RegExp(r'[17]'))) {
+      } else if (cleaned.length == 9 &&
+          cleaned.startsWith(RegExp(r'[17]'))) {
         processedNumber = cleaned;
       } else {
         return null;
@@ -258,8 +259,9 @@ class SmsService extends GetxService {
       if (!settings.isGatewayConfigured) return false;
 
       // Strip leading + for Zettatel
-      final formattedPhone =
-          phoneNumber.startsWith('+') ? phoneNumber.substring(1) : phoneNumber;
+      final formattedPhone = phoneNumber.startsWith('+')
+          ? phoneNumber.substring(1)
+          : phoneNumber;
 
       final formData = {
         'userid': settings.smsGatewayUsername,
@@ -274,10 +276,8 @@ class SmsService extends GetxService {
       };
 
       final body = formData.entries
-          .map(
-            (e) =>
-                '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}',
-          )
+          .map((e) =>
+              '${Uri.encodeComponent(e.key)}=${Uri.encodeComponent(e.value)}')
           .join('&');
 
       final response = await http
@@ -292,29 +292,20 @@ class SmsService extends GetxService {
           )
           .timeout(const Duration(seconds: 30));
 
-      print(
-        '📋 [SMS] Gateway response ${response.statusCode}: ${response.body}',
-      );
+      print('📋 [SMS] Gateway response ${response.statusCode}: ${response.body}');
 
       if (response.statusCode == 200) {
         try {
           final data = jsonDecode(response.body);
           if (data is Map) {
-            final status =
-                (data['status'] ?? data['Status'] ?? '')
-                    .toString()
-                    .toLowerCase();
+            final status = (data['status'] ?? data['Status'] ?? '').toString().toLowerCase();
             if (status == 'success' ||
                 data.containsKey('MessageId') ||
                 data.containsKey('messageid')) {
               return true;
             }
             // Show gateway error details to the user
-            final errorMsg =
-                data['reason'] ??
-                data['message'] ??
-                data['error'] ??
-                response.body;
+            final errorMsg = data['reason'] ?? data['message'] ?? data['error'] ?? response.body;
             Get.snackbar(
               'Gateway Error',
               'SMS gateway returned: $errorMsg',
@@ -377,7 +368,10 @@ class SmsService extends GetxService {
     try {
       final success = await messenger
           .sendSMS(phoneNumber: phone, message: message)
-          .timeout(const Duration(seconds: 45), onTimeout: () => false);
+          .timeout(
+            const Duration(seconds: 45),
+            onTimeout: () => false,
+          );
 
       if (success) {
         print('✅ [SMS] SIM send succeeded to $phone');
@@ -413,10 +407,10 @@ class SmsService extends GetxService {
     for (int attempt = 1; attempt <= maxRetries; attempt++) {
       print('📤 [SMS-ROBUST] Attempt $attempt/$maxRetries → $validated');
       try {
-        final success = await sendSms(
-          validated,
-          message,
-        ).timeout(const Duration(seconds: 60), onTimeout: () => false);
+        final success = await sendSms(validated, message).timeout(
+          const Duration(seconds: 60),
+          onTimeout: () => false,
+        );
 
         if (success) {
           print('✅ [SMS-ROBUST] Sent on attempt $attempt');
@@ -447,8 +441,7 @@ class SmsService extends GetxService {
 
   Future<bool> sendCoffeeCollectionSMS(CoffeeCollection collection) async {
     print(
-      '🔄 [COFFEE-SMS] Sending for ${collection.memberName} (${collection.receiptNumber})',
-    );
+        '🔄 [COFFEE-SMS] Sending for ${collection.memberName} (${collection.receiptNumber})');
 
     final memberService = Get.find<MemberService>();
     final member = await memberService.getMemberById(collection.memberId);
@@ -475,11 +468,25 @@ class SmsService extends GetxService {
     final settingsService = Get.find<SettingsService>();
     final org = settingsService.organizationSettings.value;
 
+    // Compute cumulative season net weight by summing netWeight directly from
+    // each collection record.  This is the only reliable approach because:
+    //   1. netWeight = grossWeight − tareWeight is stored per-record in the DB.
+    //   2. Calling SUM(netWeight) via getMemberSeasonSummary can return a value
+    //      that then gets formatted with toStringAsFixed(0), causing 49.5 → "50".
+    // Using toStringAsFixed(1) preserves the decimal and avoids that rounding.
     final coffeeService = Get.find<CoffeeCollectionService>();
-    final summary = await coffeeService.getMemberSeasonSummary(
+    final seasonCollections = await coffeeService.getMemberCollections(
       collection.memberId,
     );
-    final cumulative = _parseDouble(summary['allTimeWeight']);
+    final cumulative = seasonCollections.fold<double>(
+      0.0,
+      (sum, c) => sum + c.netWeight,
+    );
+
+    print(
+      '✅ [COFFEE-SMS] Cumulative season net weight for ${collection.memberName}: '
+      '${cumulative.toStringAsFixed(1)} kg (${seasonCollections.length} collections)',
+    );
 
     final msg = '''${org.societyName.toUpperCase()}
 Fac:${org.factory}
@@ -490,16 +497,14 @@ M/Name:${collection.memberName}
 Type:${collection.productType}
 Kgs:${collection.netWeight.toStringAsFixed(1)}
 Bags:${collection.numberOfBags}
-Total:${cumulative.toStringAsFixed(0)} kg
+Total:${cumulative.toStringAsFixed(1)} kg
 Served By:${collection.userName ?? 'N/A'}''';
 
     return await sendSms(validated, msg);
   }
 
   Future<bool> sendInventorySaleSMS(Sale sale) async {
-    print(
-      '🔄 [SALE-SMS] Sending for ${sale.memberName} (${sale.receiptNumber})',
-    );
+    print('🔄 [SALE-SMS] Sending for ${sale.memberName} (${sale.receiptNumber})');
 
     if (sale.memberId == null || sale.memberId!.isEmpty) return false;
 
@@ -578,28 +583,25 @@ Served By:${sale.userName ?? 'N/A'}''';
     results['sendSuccess'] = success;
     results['channelUsed'] = currentSmsMode.value;
 
-    if (success)
-      totalSmsSent.value++;
-    else
-      totalSmsFailed.value++;
+    if (success) totalSmsSent.value++;
+    else totalSmsFailed.value++;
 
     return results;
   }
 
   Map<String, dynamic> getSmsStatistics() => {
-    'totalSent': totalSmsSent.value,
-    'totalFailed': totalSmsFailed.value,
-    'queueSize': _smsQueue.length,
-    'successRate':
-        (totalSmsSent.value + totalSmsFailed.value) > 0
+        'totalSent': totalSmsSent.value,
+        'totalFailed': totalSmsFailed.value,
+        'queueSize': _smsQueue.length,
+        'successRate': (totalSmsSent.value + totalSmsFailed.value) > 0
             ? (totalSmsSent.value /
-                    (totalSmsSent.value + totalSmsFailed.value) *
-                    100)
-                .toStringAsFixed(1)
+                        (totalSmsSent.value + totalSmsFailed.value) *
+                        100)
+                    .toStringAsFixed(1)
             : '0.0',
-    'isProcessing': _isProcessingQueue,
-    'currentMode': currentSmsMode.value,
-  };
+        'isProcessing': _isProcessingQueue,
+        'currentMode': currentSmsMode.value,
+      };
 
   void clearSmsQueue() {
     _smsQueue.clear();
@@ -611,8 +613,8 @@ Served By:${sale.userName ?? 'N/A'}''';
     totalSmsFailed.value = 0;
   }
 
-  Future<bool> testSmsSending() async =>
-      Platform.isAndroid && isSmsAvailable.value;
+  Future<bool> testSmsSending() async => Platform.isAndroid &&
+      isSmsAvailable.value;
 
   Future<bool> checkSmsPermission() async {
     if (_permissionService == null) return false;
@@ -623,12 +625,8 @@ Served By:${sale.userName ?? 'N/A'}''';
   // LEGACY QUEUE (kept for backward-compat)
   // ─────────────────────────────────────────────────────────────────────────
 
-  void queueSms(
-    String phone,
-    String message, {
-    int maxRetries = 3,
-    int priority = 1,
-  }) {
+  void queueSms(String phone, String message,
+      {int maxRetries = 3, int priority = 1}) {
     // Immediately send instead of queueing
     sendSmsRobust(phone, message, maxRetries: maxRetries, priority: priority);
   }

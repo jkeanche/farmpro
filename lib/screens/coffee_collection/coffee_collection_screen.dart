@@ -610,15 +610,23 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
       final orgSettings = _settingsController.organizationSettings.value;
       final sysSettings = _settingsController.systemSettings.value;
 
-      final memberSummary = await _coffeeCollectionController
-          .getMemberSeasonSummary(collection.memberId);
-      final cumWeight = _parseDouble(memberSummary['allTimeWeight']);
+      // Compute cumulative season net weight by summing netWeight directly.
+      // This guarantees tare is never included (netWeight = gross − tare per
+      // record) and avoids integer-rounding of decimal totals.
+      final memberCollections = await _coffeeCollectionController
+          .getMemberCollections(collection.memberId);
+      final cumWeight = memberCollections.fold<double>(
+        0.0,
+        (sum, c) => sum + c.netWeight,
+      );
 
       final receiptData = {
         'type': 'coffee_collection',
         'societyName': orgSettings?.societyName ?? 'Coffee Pro Society',
         'factory': orgSettings?.factory ?? 'Main Factory',
         'societyAddress': orgSettings?.address ?? '',
+        // ── Phone number now included so it prints in the receipt header ──
+        'phoneNumber': orgSettings?.phoneNumber ?? '',
         'logoPath': orgSettings?.logoPath,
         'memberName': collection.memberName,
         'memberNumber': collection.memberNumber,
@@ -772,7 +780,7 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
     }
   }
 
-  // ── Import helpers (unchanged) ────────────────────────────────────────────
+  // ── Import helpers ────────────────────────────────────────────────────────
 
   void _showImportOptions() {
     showModalBottomSheet(
@@ -866,14 +874,6 @@ class _CoffeeCollectionScreenState extends State<CoffeeCollectionScreen> {
           colorText: Colors.white,
           snackPosition: SnackPosition.BOTTOM);
     }
-  }
-
-  // ── Utilities ─────────────────────────────────────────────────────────────
-
-  double _parseDouble(dynamic value) {
-    if (value == null) return 0.0;
-    if (value is num) return value.toDouble();
-    return double.tryParse(value.toString()) ?? 0.0;
   }
 
   // ── BUILD ─────────────────────────────────────────────────────────────────
